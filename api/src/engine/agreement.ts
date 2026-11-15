@@ -161,6 +161,8 @@ const ratio = (num: number, den: number): number | null => (den === 0 ? null : n
  * Sobre quais linhas cada número é calculado:
  * - A proposta entra na semana (de segunda a domingo, no fuso de Brasília) em que o motor gravou a decisão da
  *   cascata (`role = cascade`, `decided_at`), com a classificação da proposta.
+ * - As linhas chegam já filtradas pelo período (`between`), a medição também: a medição gravada depois do fim do
+ *   período não está aqui, e a proposta conta como sem medição naquela semana.
  * - `excluded`: as propostas da semana que caíram numa exclusão da cascata (`outside_criteria` ou
  *   `level_not_delegable`). Elas ficam só nesse campo: nenhum dos números abaixo as conta.
  * - `evaluated`: as propostas elegíveis (a E4 até R$ 20 mil do analista, sem exclusão) com a decisão da cascata na

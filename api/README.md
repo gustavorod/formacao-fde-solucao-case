@@ -79,6 +79,10 @@ aprova nada: não escreve em `approvals` nem muda `proposals`. O número de deci
   falha que persiste não toma o lugar das outras (migração `20261116130000_engine_decisions_attempts.sql`). Se a
   gravação das novas tentativas ou da medição falha, a cascata nova já gravada segue contada em
   `engine_evaluated`.
+- **A cascata que falhou só volta ao Clef se a proposta de agora ainda é dele.** Se, depois da falha, a proposta
+  passou a cair numa exclusão ou na regra (a evidência ou o valor em risco mudou), a cascata não é tentada de novo:
+  segue `clef_failed`, conta em `clef_failed` no relatório e não é refeita pela regra. A cascata é uma por
+  proposta e modo, e refazê-la pela regra trocaria quem decide numa linha já gravada; fica assim nesta história.
 
 ### O motor ao lado da pessoa (AC-4) e o relatório de acerto (AC-5)
 
@@ -96,8 +100,13 @@ proposta; nada novo é gravado.
 - **`GET /api/motor/acerto`** (atrás do Access): `?semana=AAAA-MM-DD` (a semana desse dia) ou
   `?de=AAAA-MM-DD&ate=AAAA-MM-DD` (as semanas do primeiro ao último, até 53); sem nada, as últimas 8. O período é
   fechado: lê as linhas de `decided_at` da meia-noite da primeira segunda até a meia-noite da segunda seguinte à
-  última semana (excluída), em Brasília; a medição gravada depois do fim do período não entra. Uma linha por
-  semana (segunda a domingo, no fuso de Brasília) e classificação, só a E4 nesta história, mesmo a semana vazia.
+  última semana (excluída), em Brasília. O filtro de período vale para todas as linhas, a medição também: a
+  proposta entra na semana da cascata, mas a medição do Clef gravada depois do fim do período não entra, e a
+  proposta conta como sem medição (fora de `at_or_above_threshold`). Por isso o número de uma semana pode subir
+  quando o período pedido vai além dela, e a semana fechada pode mudar enquanto a medição dela ainda está sendo
+  feita. A cascata que o Clef respondeu numa nova tentativa tem o `decided_at` da resposta e entra na semana dela.
+  Uma linha por semana (segunda a domingo, no fuso de Brasília) e classificação, só a E4 nesta história, mesmo a
+  semana vazia.
   A proposta entra na semana em que o motor gravou a decisão da cascata, com a classificação da proposta.
   - `evaluated`: as propostas elegíveis (a E4 até R$ 20 mil do analista, sem exclusão) com a decisão da cascata
     na semana. Só elas entram nos números abaixo.
