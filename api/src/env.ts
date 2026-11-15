@@ -40,4 +40,9 @@ export interface Env {
    * trocar de via muda só o secret, não o código.
    */
   BARTE_ACADEMY_ANTHROPIC_API_KEY?: string;
+  /**
+   * #41 O binding do Workers AI, por onde o motor de decisão chama o Clef, sem chave à parte. Vem do
+   * `wrangler.jsonc` (`"ai": { "binding": "ai" }`). Ausente nos testes e no `wrangler dev` sem a conta: o motor pula a rodada.
+   */
+  ai?: Ai;
 }

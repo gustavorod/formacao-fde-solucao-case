@@ -21,6 +21,8 @@ import { publishApprovedStoreAction } from '../dock/publish-approved-store-actio
 import { buildTimeline } from '../automation/timeline.js';
 import type { TimelineSource } from '../automation/readers.js';
 import { receivingPlace } from '../dock/receiving-place.js';
+import { engineView, type EngineView } from '../engine/agreement.js';
+import type { EngineReader } from '../engine/store.js';
 
 export interface ApprovalDeps {
   store: ApprovalStore;
@@ -39,6 +41,8 @@ export interface ApprovalDeps {
   storeOutbox?: StoreActionOutbox;
   /** #211 Os horários da linha do tempo da nota. Sem ele, `timeline` vai vazia. */
   timeline?: TimelineSource;
+  /** #41 AC-4 As decisões do motor da nota. Sem ele, `engine` vai nulo. */
+  engine?: Pick<EngineReader, 'forProposal'>;
 }
 
 /** #68: a fonte do dossiê e o contexto da nota, para conferir os números contra o banco. */
@@ -86,7 +90,11 @@ export async function approvalRoutes(
     return error(400, 'chave_invalida');
   }
   const action = match[2];
-  if (!action) return only(request, 'GET', () => proposalDetail(deps.store, key, identity, directory, deps.dossier, deps.products, deps.timeline));
+  if (!action) {
+    return only(request, 'GET', () =>
+      proposalDetail(deps.store, key, identity, directory, deps.dossier, deps.products, deps.timeline, deps.engine),
+    );
+  }
   return only(request, 'POST', () => decide(request, deps, key, action, identity, directory, today()));
 }
 
@@ -144,6 +152,7 @@ async function proposalDetail(
   dossier?: DossierDeps,
   products?: ApprovalDeps['products'],
   timeline?: TimelineSource,
+  engine?: ApprovalDeps['engine'],
 ): Promise<Response> {
   const file = await store.find(key);
   if (!file) return error(404, 'not_found');
@@ -171,7 +180,22 @@ async function proposalDetail(
     approval: file.approval,
     dossier: dossierView,
     timeline: await proposalTimeline(key, file, timeline),
+    engine: await proposalEngine(key, file, engine),
   });
+}
+
+/**
+ * #41 AC-4 O motor ao lado da pessoa: a decisão da cascata em modo sombra, a medição do Clef e, quando a pessoa
+ * já decidiu, se concordou. Sem decisão do motor, nulo; um erro ao ler também, sem derrubar a proposta.
+ */
+async function proposalEngine(key: string, file: CaseFile, engine?: ApprovalDeps['engine']): Promise<EngineView | null> {
+  if (!engine) return null;
+  try {
+    return engineView(await engine.forProposal(key, 'shadow'), file.proposal.state);
+  } catch (e) {
+    console.error(`#41 motor da nota ${key} não lido: ${e instanceof Error ? e.name : 'erro'}`);
+    return null;
+  }
 }
 
 /** #211 AC-4 Um erro ao ler os horários não derruba a proposta: a linha do tempo vai vazia. */

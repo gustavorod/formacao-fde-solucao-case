@@ -37,6 +37,92 @@ O Cron chama o Claude pela Messages API (`src/claude/`), no começo de cada roda
   arquivo exportando um `ClaudeTask` e uma linha em `tasks/index.ts`.
 - **Eval do casamento de descrição** (fora do gate, precisa da credencial): `npm run eval:description-match`.
 
+## O motor de decisão em modo sombra (#41)
+
+A cada rodada, depois do Claude, o Cron passa pelo motor (`src/engine/`) as propostas que aguardam uma pessoa e
+têm a E4 (unidade de medida), e grava em `engine_decisions`, com `mode = shadow`, o que o motor faria. Ele não
+aprova nada: não escreve em `approvals` nem muda `proposals`. O número de decisões da cascata gravadas na rodada
+(as novas e as refeitas depois de uma falha do Clef) vai para `automation_runs.engine_evaluated`.
+
+- **Cascata** (`cascade.ts`): primeiro as exclusões, que nunca chegam ao Clef e ficam com a pessoa
+  (`pending`): duplicidade (E6), fornecedor bloqueado, nota acima de R$ 100 mil, pedido de alterar (ação na doca
+  que não é receber), E4 junto de outra exceção e o que passa da linha 5 da régua (`outside_criteria`); diretoria
+  e bloqueio (`level_not_delegable`). Depois a **regra**: se, em UN pelo fator do cadastro, a nota bate com a ordem
+  e o valor em risco é zero, aprova. Só o resto vai ao **Clef**.
+- **Regra e Clef lado a lado** (decisão do dono): cada linha tem um `role`. A decisão efetiva da cascata é
+  `cascade`, uma por proposta e modo. Quando a regra decide uma E4 elegível (analista, até R$ 20 mil, sem
+  exclusão), o Clef também é avaliado, só para ser medido, numa linha `benchmark` da versão dele; o mesmo vale
+  para uma versão nova do Clef sobre a cascata já gravada. A medição nunca muda quem decide, e as exclusões nunca
+  chegam ao Clef, nem como medição (migração `20261116120000_engine_decisions_role.sql`).
+- **Clef** (`clef.ts`): o Workers AI pelo binding `ai` do `wrangler.jsonc`, sem chave, com o modelo
+  `@cf/meta/llama-3.3-70b-instruct-fp8-fast` em modo JSON. A versão gravada (`CLEF_MODEL_VERSION`) junta o prompt e o
+  modelo. No modo sombra a decisão do Clef fica como ele deu, com a confiança; o limite de `engine_settings` é do
+  relatório e do modo delegado (#42). A justificativa e a evidência, que vêm de fora, vão no prompt entre
+  `<justificativa>` e `<evidencia>`, com `<` e `>` trocados por `‹` e `›`; o prompt de sistema diz que o conteúdo
+  delimitado é dado, nunca instrução, e a confiança só sai do JSON conferido (versão `clef-e4-v2`).
+- **Falha fechada:** o tempo limite é `engine_settings.clef_timeout_ms`. Falha, tempo esgotado ou resposta fora do
+  formato ficam com a pessoa (`clef_failed`), com a classe do erro e a latência. Na medição, a falha grava
+  `clef_failed` na linha `benchmark` e a decisão da regra fica como está. Se o motor inteiro falha, uma linha no
+  log e a rodada segue.
+- **Idempotente:** a proposta que já tem a decisão da cascata no modo não volta à cascata, e a que já tem uma
+  resposta da versão atual do Clef (cascata ou medição) não volta ao Clef. No máximo 5 chamadas ao Clef por
+  rodada, da cascata e da medição juntas, a cascata primeiro; o resto fica para a próxima.
+- **A falha do Clef é tentada de novo, até 3 vezes:** a linha `clef_failed` da versão atual não conta como
+  avaliada. Numa rodada seguinte o Clef é chamado de novo, no mesmo papel (cascata ou medição), por um `PATCH`
+  filtrado por `pending_reason = clef_failed` e pelas tentativas lidas (`attempts`): a resposta que deu certo nunca
+  é sobrescrita, e duas rodadas ao mesmo tempo não contam a mesma tentativa duas vezes. A resposta substitui a
+  linha da falha e conta em `engine_evaluated`; a nova falha só soma a tentativa e troca `last_attempt_at`, o erro
+  e a latência, sem mover `decided_at` e sem contar como avaliada (a falha repetida não é decisão nova, e a
+  proposta não muda de semana no relatório). Com `attempts = 3` (`CLEF_MAX_ATTEMPTS`) a falha fica definitiva: o
+  Clef não é mais chamado para aquela linha, e ela segue em `clef_failed` no relatório. As novas tentativas entram
+  no teto de 5 por rodada, depois do que nunca foi avaliado, a de `last_attempt_at` mais antiga primeiro: uma
+  falha que persiste não toma o lugar das outras (migração `20261116130000_engine_decisions_attempts.sql`). Se a
+  gravação das novas tentativas ou da medição falha, a cascata nova já gravada segue contada em
+  `engine_evaluated`.
+- **A cascata que falhou só volta ao Clef se a proposta de agora ainda é dele.** Se, depois da falha, a proposta
+  passou a cair numa exclusão ou na regra (a evidência ou o valor em risco mudou), a cascata não é tentada de novo:
+  segue `clef_failed`, conta em `clef_failed` no relatório e não é refeita pela regra. A cascata é uma por
+  proposta e modo, e refazê-la pela regra trocaria quem decide numa linha já gravada; fica assim nesta história.
+
+### O motor ao lado da pessoa (AC-4) e o relatório de acerto (AC-5)
+
+Calculados na leitura (`src/engine/agreement.ts`), das linhas de `engine_decisions` em modo sombra e do estado da
+proposta; nada novo é gravado.
+
+- **A decisão da pessoa:** aprovar e alterar gravam uma linha em `approvals`; o estado da proposta separa as duas.
+  `aprovada` é `approve`; `alterada` (a pessoa pediu outra ação na doca, não aprovou a proposta como veio) é
+  `refuse`. O par concorda quando o motor decidiu o mesmo; com a pessoa ainda sem decidir, ou com o motor deixando
+  com ela (`pending`), o par é nulo.
+- **`engine` na proposta** (`GET /api/propostas/:chave`, só acrescentado): a decisão efetiva da cascata
+  (`outcome`, `decided_by`, `confidence`, `model_version`, `reason`, `pending_reason`, `decided_at`), a medição do
+  Clef em `clef` (a linha mais recente com `decided_by = clef`, da cascata ou da medição, com o próprio
+  `agreement`), `person_outcome` e `agreement`. Sem decisão do motor, ou se a leitura falha, `engine` é nulo.
+- **`GET /api/motor/acerto`** (atrás do Access): `?semana=AAAA-MM-DD` (a semana desse dia) ou
+  `?de=AAAA-MM-DD&ate=AAAA-MM-DD` (as semanas do primeiro ao último, até 53); sem nada, as últimas 8. O período é
+  fechado: lê as linhas de `decided_at` da meia-noite da primeira segunda até a meia-noite da segunda seguinte à
+  última semana (excluída), em Brasília. O filtro de período vale para todas as linhas, a medição também: a
+  proposta entra na semana da cascata, mas a medição do Clef gravada depois do fim do período não entra, e a
+  proposta conta como sem medição (fora de `at_or_above_threshold`). Por isso o número de uma semana pode subir
+  quando o período pedido vai além dela, e a semana fechada pode mudar enquanto a medição dela ainda está sendo
+  feita. A cascata que o Clef respondeu numa nova tentativa tem o `decided_at` da resposta e entra na semana dela.
+  Uma linha por semana (segunda a domingo, no fuso de Brasília) e classificação, só a E4 nesta história, mesmo a
+  semana vazia.
+  A proposta entra na semana em que o motor gravou a decisão da cascata, com a classificação da proposta.
+  - `evaluated`: as propostas elegíveis (a E4 até R$ 20 mil do analista, sem exclusão) com a decisão da cascata
+    na semana. Só elas entram nos números abaixo.
+  - `excluded`: as que caíram numa exclusão da cascata (`outside_criteria` ou `level_not_delegable`); ficam fora
+    de todas as contas de acerto, para não diluir a taxa.
+  - `decided_by_person`: delas, as já decididas pela pessoa.
+  - `agreement`: delas, as em que a cascata decidiu o mesmo que a pessoa (`pending` nunca é acerto);
+    `agreement_rate = agreement / decided_by_person`.
+  - `at_or_above_threshold`: das avaliadas, as que têm a medição do Clef com confiança igual ou acima do limite,
+    o `engine_settings.confidence_threshold` do analista (devolvido em `threshold`).
+  - `agreement_rate_at_threshold`: só nessas e já decididas pela pessoa, a parte em que o Clef decidiu o mesmo
+    que a pessoa (é o número que decide ligar a delegação, que é do Clef).
+  - `clef_failed`: das avaliadas, as que têm uma falha do Clef sem nenhuma resposta dele, as que ainda serão
+    tentadas de novo e as que chegaram às 3 tentativas; mostra o quanto falta na amostra.
+  - Divisão por zero dá `null`.
+
 ## Testar
 
 ```bash
