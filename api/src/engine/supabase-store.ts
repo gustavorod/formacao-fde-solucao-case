@@ -1,8 +1,8 @@
-// #41 A loja do motor no Supabase: engine_settings e engine_decisions (migração 20261116110000).
+// #41 A loja do motor no Supabase: engine_settings e engine_decisions (migrações 20261116110000 e 20261116120000).
 import { isBoolean, isInteger, isNumber, isString, parseRows, shaped, type Guard, type Shape } from '../connectors/guards.js';
 import { SupabaseRestError, type SupabaseRest } from '../connectors/supabase-rest.js';
 import { DEFAULT_ANALYST_SETTINGS, type EngineDecision, type EngineMode, type EngineSettings } from './decision.js';
-import type { EngineStore } from './store.js';
+import type { EngineStore, Evaluated } from './store.js';
 
 type SettingsRow = {
   level: string;
@@ -25,9 +25,6 @@ const isSettingsRow = shaped<SettingsRow>({
 /** #63 A chave de acesso tem 44 dígitos; validar aqui protege os filtros `in.(...)` montados com ela. */
 const isAccessKey = (v: string): boolean => /^\d{44}$/.test(v);
 
-/** #41 A versão vai entre aspas no filtro `in.(...)`; aspas, vírgula e parênteses não entram. */
-const isSafeVersion = (v: string): boolean => /^[^",()]+$/.test(v);
-
 export class SupabaseEngineStore implements EngineStore {
   constructor(private readonly rest: SupabaseRest) {}
 
@@ -47,23 +44,29 @@ export class SupabaseEngineStore implements EngineStore {
     };
   }
 
-  async decidedKeys(mode: EngineMode, modelVersions: readonly string[]): Promise<Set<string>> {
-    if (modelVersions.length === 0) return new Set();
-    if (!modelVersions.every(isSafeVersion)) {
-      throw new SupabaseRestError('select', 'engine_decisions', 0, 'versão do modelo fora do formato');
-    }
-    const rows = parseRows(
-      await this.rest.select('engine_decisions', {
-        select: 'invoice_access_key',
-        filters: { mode: `eq.${mode}`, model_version: `in.(${modelVersions.map((v) => `"${v}"`).join(',')})` },
-      }),
-      shaped<{ invoice_access_key: string }>({ invoice_access_key: isString }),
-      'engine_decisions',
-    );
-    return new Set(rows.map((r) => r.invoice_access_key));
+  /** #41 Duas leituras: as notas com a decisão da cascata e as que já têm a versão atual do Clef. */
+  async evaluated(mode: EngineMode, clefVersion: string): Promise<Evaluated> {
+    const keys = async (filters: Record<string, string>) =>
+      new Set(
+        parseRows(
+          await this.rest.select('engine_decisions', { select: 'invoice_access_key', filters: { mode: `eq.${mode}`, ...filters } }),
+          shaped<{ invoice_access_key: string }>({ invoice_access_key: isString }),
+          'engine_decisions',
+        ).map((r) => r.invoice_access_key),
+      );
+    const [cascade, clef] = await Promise.all([
+      keys({ role: 'eq.cascade' }),
+      keys({ model_version: `eq.${clefVersion}` }),
+    ]);
+    return { cascade, clef };
   }
 
-  /** #41 Liga cada decisão à proposta da nota (uma por nota) e grava, ignorando a que já existe. */
+  /**
+   * #41 Liga cada decisão à proposta da nota (uma por nota) e grava, ignorando a que já existe na mesma
+   * proposta, versão e modo. A unicidade de uma cascata por proposta e modo é garantida pela rodada, que só
+   * grava a cascata da nota que ainda não tem; duas rodadas ao mesmo tempo gravam a mesma versão e caem na
+   * primeira unicidade.
+   */
   async record(decisions: readonly EngineDecision[]): Promise<number> {
     if (decisions.length === 0) return 0;
     const keys = [...new Set(decisions.map((d) => d.invoiceAccessKey))];
@@ -91,6 +94,7 @@ export class SupabaseEngineStore implements EngineStore {
           confidence: d.confidence,
           model_version: d.modelVersion,
           mode: d.mode,
+          role: d.role,
           reason: d.reason,
           pending_reason: d.pendingReason,
           error: d.error,

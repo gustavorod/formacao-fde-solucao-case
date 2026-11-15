@@ -10,26 +10,59 @@ import { caseFile, FakeClef } from './support.js';
 
 const SETTINGS: EngineSettings = DEFAULT_ANALYST_SETTINGS;
 
-/** #41 Roda a rodada sobre um processo só e devolve a decisão gravada e o Clef falso. */
+/**
+ * #41 Roda a rodada sobre um processo só e devolve a decisão da cascata, a medição do Clef (quando houver) e o
+ * Clef falso.
+ */
 async function evaluateOne(file: ReturnType<typeof caseFile>, clef = new FakeClef()) {
   const store = new MemoryEngineStore();
   await runShadowRound({ approvals: { listAwaiting: async () => [file] }, store, clef });
-  return { decision: store.decisions[0], clef, store };
+  const decision = store.decisions.find((d) => d.role === 'cascade');
+  const benchmark = store.decisions.find((d) => d.role === 'benchmark');
+  return { decision, benchmark, clef, store };
 }
 
 describe('#41 AC-2 a regra decide primeiro', () => {
-  it('a conversão que fecha com valor em risco zero é aprovada pela regra, sem chamar o Clef', async () => {
-    const { decision, clef } = await evaluateOne(caseFile({ invoicedUnits: 40, orderedUnits: 40 }));
-    expect(clef.calls).toHaveLength(0);
+  it('a conversão que fecha com valor em risco zero é aprovada pela regra; o Clef só é medido ao lado', async () => {
+    const clef = new FakeClef(async () => ({ response: { outcome: 'refuse', confidence: 0.99, reason: 'recusaria' } }));
+    const { decision, benchmark } = await evaluateOne(caseFile({ invoicedUnits: 40, orderedUnits: 40 }), clef);
+    // #41 AC-2 Quem decide é a regra, mesmo com o Clef discordando: a medição não muda a cascata.
     expect(decision).toMatchObject({
       outcome: 'approve',
       decidedBy: 'rule',
       confidence: null,
       modelVersion: RULE_VERSION,
       mode: 'shadow',
+      role: 'cascade',
       pendingReason: null,
     });
     expect(decision?.reason).toContain('SKU-1 40 UN pelo fator 4');
+    expect(clef.calls).toHaveLength(1);
+    expect(benchmark).toMatchObject({
+      role: 'benchmark',
+      outcome: 'refuse',
+      decidedBy: 'clef',
+      confidence: 0.99,
+      modelVersion: 'clef-teste-v1',
+    });
+  });
+
+  it('a medição do Clef que falha grava clef_failed só na medição; a decisão da regra fica', async () => {
+    const clef = new FakeClef(async () => {
+      throw new Error('caiu');
+    });
+    const { decision, benchmark, store } = await evaluateOne(caseFile(), clef);
+    expect(decision).toMatchObject({ role: 'cascade', outcome: 'approve', decidedBy: 'rule' });
+    expect(benchmark).toMatchObject({
+      role: 'benchmark',
+      outcome: 'pending',
+      decidedBy: 'person',
+      pendingReason: 'clef_failed',
+      error: 'Error',
+      modelVersion: 'clef-teste-v1',
+    });
+    expect(benchmark?.reason).toMatch(/decisão da cascata não muda/);
+    expect(store.decisions).toHaveLength(2);
   });
 
   it('com valor em risco, a regra não decide e o Clef é chamado com a evidência da conversão', async () => {
@@ -37,7 +70,7 @@ describe('#41 AC-2 a regra decide primeiro', () => {
     expect(clef.calls).toHaveLength(1);
     expect(clef.calls[0]?.evidence.some((e) => e.source === 'erp_cadastro' && e.description.includes('fator de caixa 4'))).toBe(true);
     expect(clef.calls[0]).toMatchObject({ classification: 'E4', level: 'analista', reguaLine: 5, amountAtRisk: 'R$ 15,00' });
-    expect(decision).toMatchObject({ outcome: 'approve', decidedBy: 'clef', confidence: 0.97, modelVersion: 'clef-teste-v1' });
+    expect(decision).toMatchObject({ role: 'cascade', outcome: 'approve', decidedBy: 'clef', confidence: 0.97, modelVersion: 'clef-teste-v1' });
     expect(decision?.latencyMs).toBeGreaterThanOrEqual(0);
   });
 
@@ -77,9 +110,10 @@ describe('#41 AC-3 as exclusões nunca chegam ao Clef', () => {
   ] as const;
 
   for (const [name, file, pendingReason, reason] of cases) {
-    it(`${name}: pendente com a pessoa, sem chamar o Clef`, async () => {
-      const { decision, clef } = await evaluateOne(file);
+    it(`${name}: pendente com a pessoa, sem chamar o Clef, nem para medir`, async () => {
+      const { decision, benchmark, clef } = await evaluateOne(file);
       expect(clef.calls).toHaveLength(0);
+      expect(benchmark).toBeUndefined();
       expect(decision).toMatchObject({
         outcome: 'pending',
         decidedBy: 'person',
@@ -172,8 +206,10 @@ describe('#41 AC-6 o Clef que falha ou demora vai para a pessoa', () => {
     const store = new MemoryEngineStore();
     const files = [caseFile({ riskCents: 1_500 }), caseFile({ riskCents: 1_500 }), caseFile()];
     const round = await runShadowRound({ approvals: { listAwaiting: async () => files }, store, clef });
-    expect(round).toMatchObject({ evaluated: 3, clefCalls: 2, clefFailed: 1 });
-    expect(store.decisions.map((d) => d.pendingReason ?? d.decidedBy)).toEqual(['clef_failed', 'clef', 'rule']);
+    // #41 Duas chamadas da cascata e uma de medição (a da regra); a primeira falha e as outras seguem.
+    expect(round).toMatchObject({ evaluated: 3, measured: 1, clefCalls: 3, clefFailed: 1 });
+    const cascade = store.decisions.filter((d) => d.role === 'cascade');
+    expect(cascade.map((d) => d.pendingReason ?? d.decidedBy).sort()).toEqual(['clef', 'clef_failed', 'rule']);
   });
 });
 

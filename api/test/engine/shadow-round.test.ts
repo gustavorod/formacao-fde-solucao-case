@@ -26,7 +26,7 @@ describe('#41 AC-1 modo sombra', () => {
 
     await runShadowRound({ approvals, store, clef: new FakeClef() });
 
-    expect(store.decisions.map((d) => d.outcome)).toEqual(['approve', 'approve']);
+    expect(store.decisions.filter((d) => d.role === 'cascade').map((d) => d.outcome)).toEqual(['approve', 'approve']);
     expect(store.decisions.every((d) => d.mode === 'shadow')).toBe(true);
     expect(saveDecision).not.toHaveBeenCalled();
     expect((await approvals.listAwaiting()).map((f) => f.proposal.state)).toEqual([
@@ -65,20 +65,34 @@ describe('#41 idempotência', () => {
     const first = await runShadowRound({ approvals, store, clef: new FakeClef() });
     const clef = new FakeClef();
     const second = await runShadowRound({ approvals, store, clef });
-    expect(first.evaluated).toBe(3);
-    expect(second.evaluated).toBe(0);
+    // #41 Três da cascata (regra, Clef, exclusão) e uma medição (o Clef ao lado da regra); o excluído não mede.
+    expect(first).toMatchObject({ evaluated: 3, measured: 1, clefCalls: 2 });
+    expect(second).toMatchObject({ evaluated: 0, measured: 0, clefCalls: 0 });
     expect(clef.calls).toHaveLength(0);
-    expect(store.decisions).toHaveLength(3);
+    expect(store.decisions).toHaveLength(4);
   });
 
-  it('com uma versão nova do Clef, só o que o Clef decidiu volta a ser avaliado', async () => {
-    const approvals = new MemoryApprovalStore([caseFile(), caseFile({ riskCents: 1_500 })]);
+  it('com uma versão nova do Clef, a cascata fica e a versão nova é só medida, nas elegíveis', async () => {
+    const approvals = new MemoryApprovalStore([caseFile(), caseFile({ riskCents: 1_500 }), caseFile({ extra: ['E6'] })]);
     const store = new MemoryEngineStore();
     await runShadowRound({ approvals, store, clef: new FakeClef() });
     const next = new FakeClef(undefined, 'clef-teste-v2');
     const round = await runShadowRound({ approvals, store, clef: next });
-    expect(round.evaluated).toBe(1);
-    expect(next.calls).toHaveLength(1);
+    expect(round).toMatchObject({ evaluated: 0, measured: 2, clefCalls: 2 });
+    expect(store.decisions.filter((d) => d.role === 'cascade')).toHaveLength(3);
+    expect(store.decisions.filter((d) => d.modelVersion === 'clef-teste-v2').every((d) => d.role === 'benchmark')).toBe(true);
+  });
+
+  it('o teto vale para a cascata e a medição juntas, e a cascata vem primeiro', async () => {
+    const approvals = new MemoryApprovalStore([caseFile(), caseFile(), caseFile({ riskCents: 1_500 })]);
+    const store = new MemoryEngineStore();
+    const clef = new FakeClef();
+    const first = await runShadowRound({ approvals, store, clef, clefLimit: 2 });
+    // #41 A chamada da cascata (a nota com valor em risco) entra antes das duas medições; uma fica para depois.
+    expect(first).toMatchObject({ evaluated: 3, measured: 1, clefCalls: 2, deferred: 1 });
+    expect(clef.calls[0]?.amountAtRisk).toBe('R$ 15,00');
+    const second = await runShadowRound({ approvals, store, clef, clefLimit: 2 });
+    expect(second).toMatchObject({ evaluated: 0, measured: 1, clefCalls: 1, deferred: 0 });
   });
 });
 
@@ -111,6 +125,7 @@ describe('#41 a loja no Supabase', () => {
         pending_reason: 'clef_failed',
         error: 'ClefTimeoutError',
         model_version: 'clef-teste-v1',
+        role: 'cascade',
       }),
     ]);
     const writes = fake.requests.filter((r) => r.method !== 'GET').map((r) => new URL(r.url).pathname);
@@ -127,7 +142,7 @@ describe('#41 a loja no Supabase', () => {
     const store = new SupabaseEngineStore(new SupabaseRest({ ...ENV, fetch: fake.fetch }));
     const decision = {
       invoiceAccessKey: file.invoice.accessKey, outcome: 'approve', decidedBy: 'rule', confidence: null,
-      modelVersion: RULE_VERSION, mode: 'shadow', reason: 'fecha', pendingReason: null, error: null, latencyMs: null,
+      modelVersion: RULE_VERSION, mode: 'shadow', role: 'cascade', reason: 'fecha', pendingReason: null, error: null, latencyMs: null,
     } as const;
     expect(await store.record([decision])).toBe(1);
     expect(await store.record([decision])).toBe(0);
@@ -147,9 +162,15 @@ describe('#41 o motor na rodada do Cron', () => {
 
     await tick({ cron: '*/15 * * * *' }, { ...ENV, ai: ai(answer) });
     const decisions = fake.rows('engine_decisions');
+    const cascade = decisions.filter((d) => d.role === 'cascade');
     const [run] = fake.rows('automation_runs');
-    expect(decisions.length).toBeGreaterThan(0);
-    expect(run?.engine_evaluated).toBe(decisions.length);
+    expect(cascade.length).toBeGreaterThan(0);
+    expect(run?.engine_evaluated).toBe(cascade.length);
+    // #41 Na base do kit a regra decide as E4 elegíveis; o Clef é medido ao lado, sem mudar quem decide.
+    const benchmark = decisions.filter((d) => d.role === 'benchmark');
+    expect(benchmark.length).toBeGreaterThan(0);
+    expect(benchmark.every((d) => d.decided_by === 'clef')).toBe(true);
+    expect(cascade.filter((d) => benchmark.some((b) => b.proposal_id === d.proposal_id)).every((d) => d.decided_by === 'rule')).toBe(true);
     expect(decisions.every((d) => d.mode === 'shadow')).toBe(true);
 
     // #41 Modo sombra: nenhuma proposta avaliada pelo motor foi aprovada.

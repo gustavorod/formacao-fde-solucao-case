@@ -3,7 +3,14 @@ import type { CaseFile } from '../approval/store.js';
 import { REGUA } from '../domain/approval-policy.js';
 import type { Divergence } from '../domain/divergence.js';
 import { parseClefAnswer, ClefTimeoutError, type Clef, type ClefInput } from './clef.js';
-import { RULE_VERSION, type EngineDecision, type EngineMode, type EngineSettings, type PendingReason } from './decision.js';
+import {
+  RULE_VERSION,
+  type EngineDecision,
+  type EngineMode,
+  type EngineRole,
+  type EngineSettings,
+  type PendingReason,
+} from './decision.js';
 
 /**
  * #41 Entra no motor a proposta que aguarda uma pessoa e tem uma divergência E4, em qualquer valor, nível ou
@@ -110,7 +117,14 @@ export function ruleDecides(file: CaseFile): { readonly reason: string } | null 
  * #41 Exclusões e regra, sem chamar o Clef. Devolve a decisão, ou nulo quando só o Clef pode decidir.
  */
 export function screen(file: CaseFile, mode: EngineMode): EngineDecision | null {
-  const base = { invoiceAccessKey: file.invoice.accessKey, mode, error: null, latencyMs: null, modelVersion: RULE_VERSION };
+  const base = {
+    invoiceAccessKey: file.invoice.accessKey,
+    mode,
+    role: 'cascade' as const,
+    error: null,
+    latencyMs: null,
+    modelVersion: RULE_VERSION,
+  };
   const excluded = exclusionOf(file);
   if (excluded) {
     return { ...base, outcome: 'pending', decidedBy: 'person', confidence: null, ...excluded };
@@ -160,17 +174,38 @@ async function askWithTimeout(clef: Clef, input: ClefInput, timeoutMs: number): 
 }
 
 /**
+ * #41 Decisão do dono: a proposta que pode ir ao Clef é a que não cai em exclusão nenhuma. Ela vai ao Clef na
+ * cascata, quando a regra não decide, ou só para medição (`benchmark`), quando a regra decide. As exclusões
+ * (AC-3) nunca chegam ao Clef, nem para medir.
+ */
+export function clefEligible(file: CaseFile): boolean {
+  return exclusionOf(file) === null;
+}
+
+/**
  * #41 O Clef decide o que a regra não decidiu. No modo sombra grava o que ele faria, com a confiança, sem
  * aplicar o limite: o relatório compara a confiança com o limite (`at_or_above_threshold`), e quem aplica o
  * limite para aprovar é o modo delegado (#42). AC-6: falha, tempo esgotado ou resposta inválida deixam a
- * proposta com a pessoa, como hoje, com a classe do erro e a latência gravadas; nada lança daqui.
+ * proposta com a pessoa, como hoje, com a classe do erro e a latência gravadas; nada lança daqui. Com
+ * `role = 'benchmark'` a resposta é só medida: a decisão da cascata (a da regra) não muda.
  */
 export async function askClef(
   file: CaseFile,
-  deps: { readonly clef: Clef; readonly settings: EngineSettings; readonly mode: EngineMode; readonly now?: () => number },
+  deps: {
+    readonly clef: Clef;
+    readonly settings: EngineSettings;
+    readonly mode: EngineMode;
+    readonly role?: EngineRole;
+    readonly now?: () => number;
+  },
 ): Promise<EngineDecision> {
   const now = deps.now ?? (() => Date.now());
-  const base = { invoiceAccessKey: file.invoice.accessKey, mode: deps.mode, modelVersion: deps.clef.modelVersion };
+  const base = {
+    invoiceAccessKey: file.invoice.accessKey,
+    mode: deps.mode,
+    role: deps.role ?? 'cascade',
+    modelVersion: deps.clef.modelVersion,
+  };
   const started = now();
   try {
     const answer = parseClefAnswer(await askWithTimeout(deps.clef, clefInputOf(file), deps.settings.clefTimeoutMs));
@@ -190,7 +225,10 @@ export async function askClef(
       outcome: 'pending',
       decidedBy: 'person',
       confidence: null,
-      reason: 'O Clef não respondeu a tempo ou respondeu fora do formato: a proposta segue para a pessoa',
+      reason:
+        base.role === 'benchmark'
+          ? 'O Clef não respondeu a tempo ou respondeu fora do formato: a medição fica sem resposta e a decisão da cascata não muda'
+          : 'O Clef não respondeu a tempo ou respondeu fora do formato: a proposta segue para a pessoa',
       pendingReason: 'clef_failed',
       error: errorClass(error),
       latencyMs: Math.max(0, Math.round(now() - started)),

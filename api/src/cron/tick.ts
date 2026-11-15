@@ -191,7 +191,7 @@ async function runEngine(rest: SupabaseRest, env: Env): Promise<number> {
       clef: new WorkersAiClef(env.ai),
     });
     console.log(
-      `cron: motor (sombra), avaliadas ${round.evaluated}, Clef ${round.clefCalls}, com falha ${round.clefFailed}, para a próxima rodada ${round.deferred}`,
+      `cron: motor (sombra), avaliadas ${round.evaluated}, medidas pelo Clef ${round.measured}, Clef ${round.clefCalls}, com falha ${round.clefFailed}, para a próxima rodada ${round.deferred}`,
     );
     return round.evaluated;
   } catch (error) {

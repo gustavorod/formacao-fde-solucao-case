@@ -41,7 +41,7 @@ O Cron chama o Claude pela Messages API (`src/claude/`), no começo de cada roda
 
 A cada rodada, depois do Claude, o Cron passa pelo motor (`src/engine/`) as propostas que aguardam uma pessoa e
 têm a E4 (unidade de medida), e grava em `engine_decisions`, com `mode = shadow`, o que o motor faria. Ele não
-aprova nada: não escreve em `approvals` nem muda `proposals`. O número de avaliadas vai para
+aprova nada: não escreve em `approvals` nem muda `proposals`. O número de decisões novas da cascata vai para
 `automation_runs.engine_evaluated`.
 
 - **Cascata** (`cascade.ts`): primeiro as exclusões, que nunca chegam ao Clef e ficam com a pessoa
@@ -49,15 +49,22 @@ aprova nada: não escreve em `approvals` nem muda `proposals`. O número de aval
   que não é receber), E4 junto de outra exceção e o que passa da linha 5 da régua (`outside_criteria`); diretoria
   e bloqueio (`level_not_delegable`). Depois a **regra**: se, em UN pelo fator do cadastro, a nota bate com a ordem
   e o valor em risco é zero, aprova. Só o resto vai ao **Clef**.
+- **Regra e Clef lado a lado** (decisão do dono): cada linha tem um `role`. A decisão efetiva da cascata é
+  `cascade`, uma por proposta e modo. Quando a regra decide uma E4 elegível (analista, até R$ 20 mil, sem
+  exclusão), o Clef também é avaliado, só para ser medido, numa linha `benchmark` da versão dele; o mesmo vale
+  para uma versão nova do Clef sobre a cascata já gravada. A medição nunca muda quem decide, e as exclusões nunca
+  chegam ao Clef, nem como medição (migração `20261116120000_engine_decisions_role.sql`).
 - **Clef** (`clef.ts`): o Workers AI pelo binding `ai` do `wrangler.jsonc`, sem chave, com o modelo
   `@cf/meta/llama-3.3-70b-instruct-fp8-fast` em modo JSON. A versão gravada (`CLEF_MODEL_VERSION`) junta o prompt e o
   modelo. No modo sombra a decisão do Clef fica como ele deu, com a confiança; o limite de `engine_settings` é do
   relatório e do modo delegado (#42).
 - **Falha fechada:** o tempo limite é `engine_settings.clef_timeout_ms`. Falha, tempo esgotado ou resposta fora do
-  formato ficam com a pessoa (`clef_failed`), com a classe do erro e a latência. Se o motor inteiro falha, uma linha
-  no log e a rodada segue.
-- **Idempotente:** a proposta que já tem decisão no modo e na versão (da regra ou do Clef) não é reavaliada. No
-  máximo 5 chamadas ao Clef por rodada; o resto fica para a próxima.
+  formato ficam com a pessoa (`clef_failed`), com a classe do erro e a latência. Na medição, a falha grava
+  `clef_failed` na linha `benchmark` e a decisão da regra fica como está. Se o motor inteiro falha, uma linha no
+  log e a rodada segue.
+- **Idempotente:** a proposta que já tem a decisão da cascata no modo não volta à cascata, e a que já tem uma linha
+  da versão atual do Clef (cascata ou medição) não volta ao Clef. No máximo 5 chamadas ao Clef por rodada, da
+  cascata e da medição juntas, a cascata primeiro; o resto fica para a próxima.
 
 ## Testar
 

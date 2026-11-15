@@ -8,6 +8,12 @@ export type DecidedBy = 'rule' | 'clef' | 'person';
 /** #149 `shadow` só grava o que faria; `delegated` aprova (#42). */
 export type EngineMode = 'shadow' | 'delegated';
 
+/**
+ * #41 `cascade` é a decisão efetiva da cascata (uma por proposta e modo); `benchmark` é o Clef avaliado só para
+ * ser medido, quando a regra já decidiu ou numa versão nova do Clef. A medição nunca muda quem decide.
+ */
+export type EngineRole = 'cascade' | 'benchmark';
+
 /** #41 Por que a decisão ficou com a pessoa. Os valores são os da restrição de engine_decisions. */
 export type PendingReason =
   | 'below_confidence'
@@ -20,9 +26,9 @@ export type PendingReason =
 export const RULE_VERSION = 'regra-e4-v1';
 
 /**
- * #41 A decisão do motor para uma proposta. As combinações seguem as restrições da migração
- * 20261116110000_engine_decisions.sql: confiança só quando o Clef decidiu; motivo de pendência só com
- * `pending`; a pessoa só com `pending`.
+ * #41 A decisão do motor para uma proposta. As combinações seguem as restrições das migrações
+ * 20261116110000_engine_decisions.sql e 20261116120000_engine_decisions_role.sql: confiança só quando o Clef
+ * decidiu; motivo de pendência só com `pending`; a pessoa só com `pending`; a medição (`benchmark`) só do Clef.
  */
 export type EngineDecision = {
   readonly invoiceAccessKey: string;
@@ -31,6 +37,7 @@ export type EngineDecision = {
   readonly confidence: number | null;
   readonly modelVersion: string;
   readonly mode: EngineMode;
+  readonly role: EngineRole;
   /** #149 O porquê, em uma frase, citando a evidência. */
   readonly reason: string;
   readonly pendingReason: PendingReason | null;
@@ -38,6 +45,9 @@ export type EngineDecision = {
   readonly error: string | null;
   readonly latencyMs: number | null;
 };
+
+/** #41 A decisão gravada, com a hora em que o motor a gravou (`decided_at`). */
+export type StoredDecision = EngineDecision & { readonly decidedAt: string };
 
 /** #41 O que o motor lê de engine_settings para um nível. */
 export type EngineSettings = {
