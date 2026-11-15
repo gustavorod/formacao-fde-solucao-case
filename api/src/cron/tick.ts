@@ -13,6 +13,9 @@ import { SupabaseApprovalStore } from "../approval/supabase-store";
 import { publishDecidedDockActions, publishDecidedStoreActions } from "../dock/publish-decided";
 import { NO_FIGURES, recordRun, type RunFigures } from "../automation/runs";
 import { lastDaysUtc, publishApprovedUnregistered } from "./publish-approved-e8";
+import { WorkersAiClef } from "../engine/clef";
+import { runShadowRound } from "../engine/run";
+import { SupabaseEngineStore } from "../engine/supabase-store";
 
 /** #66 A janela, em dias, das decisões que o Cron manda ao Cadastro; ver `lastDaysUtc`. */
 const PUBLISH_WINDOW_DAYS = 7;
@@ -88,8 +91,10 @@ async function runRound(
   // #171 O Claude vai por último: é periférico, e a captura (o caminho crítico) fica com os subrequests da
   // invocação. As sugestões que ele grava aqui a próxima rodada lê. Falha fechada: a regra decide sozinha.
   await runClaudeRound(rest, env);
+  // #41 O motor de decisão em modo sombra também é periférico: grava o que faria, sem aprovar, e falha sozinho.
+  const engineEvaluated = await runEngine(rest, env);
   console.log(
-    `cron: execução agendada (${controller.cron}); notas vistas ${result.seen}, novas ${result.inserted}, conferidas ${result.checked}, com erro ${result.failed}, propostas ${proposals.proposed}, aprovadas pela regra ${proposals.approvedByRule}, cadastro E8 ${cadastroE8}, ações publicadas na doca ${dock}, ações publicadas no app da loja ${storeActions}, títulos duplicados bloqueados ${duplicates.blocked}, com falha ${duplicates.failed}; recebimentos sem nota [${unreconciled.noKey.join(", ")}], com chave sem nota [${unreconciled.keyWithoutInvoice.join(", ")}]`,
+    `cron: execução agendada (${controller.cron}); notas vistas ${result.seen}, novas ${result.inserted}, conferidas ${result.checked}, com erro ${result.failed}, propostas ${proposals.proposed}, aprovadas pela regra ${proposals.approvedByRule}, cadastro E8 ${cadastroE8}, ações publicadas na doca ${dock}, ações publicadas no app da loja ${storeActions}, títulos duplicados bloqueados ${duplicates.blocked}, com falha ${duplicates.failed}, avaliadas pelo motor ${engineEvaluated}; recebimentos sem nota [${unreconciled.noKey.join(", ")}], com chave sem nota [${unreconciled.keyWithoutInvoice.join(", ")}]`,
   );
   const summary = {
     seen: result.seen,
@@ -105,6 +110,7 @@ async function runRound(
     dockPublished: dock,
     storePublished: storeActions,
     duplicatesBlocked: duplicates.blocked,
+    engineEvaluated,
   };
   return { summary, figures };
 }
@@ -164,6 +170,33 @@ async function publishStoreActions(rest: SupabaseRest): Promise<number> {
   } catch (error) {
     const status = error instanceof SupabaseRestError ? `HTTP ${error.status}` : "falha na publicação";
     console.log(`cron: app da loja indisponível (${status}); a próxima rodada repete`);
+    return 0;
+  }
+}
+
+/**
+ * #41 AC-1 a AC-3 e AC-6 O motor de decisão em modo sombra: avalia as propostas de E4 ainda sem decisão e grava o
+ * que faria em engine_decisions, sem tocar em approvals nem em proposals. Sem o binding do Workers AI, pula; se
+ * falha, registra uma linha sem dado sensível e a rodada segue: a próxima avalia o que ficou.
+ */
+async function runEngine(rest: SupabaseRest, env: Env): Promise<number> {
+  if (!env.ai) {
+    console.log("cron: sem o binding do Workers AI; motor de decisão pulado");
+    return 0;
+  }
+  try {
+    const round = await runShadowRound({
+      approvals: new SupabaseApprovalStore(rest),
+      store: new SupabaseEngineStore(rest),
+      clef: new WorkersAiClef(env.ai),
+    });
+    console.log(
+      `cron: motor (sombra), avaliadas ${round.evaluated}, Clef ${round.clefCalls}, com falha ${round.clefFailed}, para a próxima rodada ${round.deferred}`,
+    );
+    return round.evaluated;
+  } catch (error) {
+    const status = error instanceof SupabaseRestError ? `HTTP ${error.status}` : "falha no motor";
+    console.log(`cron: motor de decisão indisponível (${status}); a próxima rodada repete`);
     return 0;
   }
 }

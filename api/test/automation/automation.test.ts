@@ -39,7 +39,7 @@ describe('#211 AC-1 o tick grava a rodada', () => {
     expect(runs[0]?.proposed).toBeGreaterThan(0);
     expect(Date.parse(String(runs[0]?.finished_at))).toBeGreaterThanOrEqual(Date.parse(String(runs[0]?.started_at)));
     expect(Object.keys(runs[0] ?? {}).sort()).toEqual([
-      'approved_by_rule', 'cadastro_e8', 'checked', 'dock_published', 'duplicates_blocked', 'error', 'failed',
+      'approved_by_rule', 'cadastro_e8', 'checked', 'dock_published', 'duplicates_blocked', 'engine_evaluated', 'error', 'failed',
       'finished_at', 'inserted', 'proposed', 'seen', 'started_at', 'status', 'store_published',
     ]);
   });
@@ -76,7 +76,7 @@ describe('#211 GET /api/automacao', () => {
   };
   const run = (id: number, startedAt: string, status: 'ok' | 'failed') => ({
     id, started_at: startedAt, finished_at: startedAt, status, seen: 12, inserted: 12, checked: 12, failed: 0,
-    proposed: 11, approved_by_rule: 7, cadastro_e8: 0, dock_published: 5, store_published: 0, duplicates_blocked: 0, error: null,
+    proposed: 11, approved_by_rule: 7, cadastro_e8: 0, dock_published: 5, store_published: 0, duplicates_blocked: 0, engine_evaluated: 0, error: null,
   });
 
   it('exige o Access', async () => {
