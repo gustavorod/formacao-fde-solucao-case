@@ -59,6 +59,11 @@ export interface EngineStore {
    */
   record(decisions: readonly EngineDecision[]): Promise<number>;
   /**
+   * #42 Grava uma decisão do modo delegado e devolve o id da linha, que a aprovação do motor cita. Nulo quando a
+   * proposta já tem a linha (outra rodada gravou antes, ou não há proposta da nota): quem gravou primeiro decide.
+   */
+  recordWithId(decision: EngineDecision): Promise<number | null>;
+  /**
    * #41 Grava a resposta da nova tentativa do Clef por cima da linha `clef_failed` da mesma proposta, versão, modo
    * e papel, ainda com as tentativas lidas, e devolve quantas trocou. Só a linha de falha é trocada: a resposta que
    * já deu certo nunca é sobrescrita. `decided_at` passa a ser a hora da resposta.
@@ -84,7 +89,7 @@ export interface EngineReader {
 }
 
 /** #41 A linha como a loja em memória guarda: a decisão e as tentativas (as colunas da migração 20261116130000). */
-export type MemoryRow = StoredDecision & { readonly attempts: number; readonly lastAttemptAt: string };
+export type MemoryRow = StoredDecision & { readonly id: number; readonly attempts: number; readonly lastAttemptAt: string };
 
 /** #41 Loja em memória: a dos testes. */
 export class MemoryEngineStore implements EngineStore, EngineReader {
@@ -125,23 +130,26 @@ export class MemoryEngineStore implements EngineStore, EngineReader {
   /** #41 As duas unicidades do banco: (proposta, versão, modo) e uma cascata por proposta e modo. */
   async record(decisions: readonly EngineDecision[]): Promise<number> {
     let inserted = 0;
-    for (const d of decisions) {
-      const exists = this.decisions.some(
-        (x) =>
-          x.invoiceAccessKey === d.invoiceAccessKey &&
-          x.mode === d.mode &&
-          (x.modelVersion === d.modelVersion || (x.role === 'cascade' && d.role === 'cascade')),
-      );
-      if (exists) continue;
-      const at = this.now().toISOString();
-      this.decisions.push({ ...d, decidedAt: at, attempts: 1, lastAttemptAt: at });
-      inserted += 1;
-    }
+    for (const d of decisions) if ((await this.recordWithId(d)) !== null) inserted += 1;
     return inserted;
   }
 
+  async recordWithId(d: EngineDecision): Promise<number | null> {
+    const exists = this.decisions.some(
+      (x) =>
+        x.invoiceAccessKey === d.invoiceAccessKey &&
+        x.mode === d.mode &&
+        (x.modelVersion === d.modelVersion || (x.role === 'cascade' && d.role === 'cascade')),
+    );
+    if (exists) return null;
+    const at = this.now().toISOString();
+    const id = this.decisions.length + 1;
+    this.decisions.push({ ...d, recommendation: d.recommendation ?? null, id, decidedAt: at, attempts: 1, lastAttemptAt: at });
+    return id;
+  }
+
   async replaceFailed(retries: readonly Retry[]): Promise<number> {
-    return this.patchFailed(retries, (row, d, at) => ({ ...d, decidedAt: at, attempts: row.attempts + 1, lastAttemptAt: at }));
+    return this.patchFailed(retries, (row, d, at) => ({ ...d, id: row.id, decidedAt: at, attempts: row.attempts + 1, lastAttemptAt: at }));
   }
 
   async noteFailedAttempt(retries: readonly Retry[]): Promise<number> {

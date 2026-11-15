@@ -44,7 +44,15 @@ export type EngineDecision = {
   /** #41 AC-6 A classe da falha do Clef, nunca a mensagem nem dado sensível. */
   readonly error: string | null;
   readonly latencyMs: number | null;
+  /**
+   * #42 AC-2 O que o Clef recomendaria quando a confiança ficou abaixo do limite (`below_confidence`), e só aí
+   * (restrição da migração 20261117120000). Ausente vale nulo.
+   */
+  readonly recommendation?: EngineRecommendation | null;
 };
+
+/** #42 A recomendação do motor na pendência por confiança baixa. */
+export type EngineRecommendation = 'approve' | 'refuse';
 
 /** #41 A decisão gravada, com a hora em que o motor a gravou (`decided_at`). */
 export type StoredDecision = EngineDecision & { readonly decidedAt: string };
@@ -57,10 +65,13 @@ export type EngineSettings = {
   readonly clefTimeoutMs: number;
 };
 
-/** #41 Os valores padrão da migração, para o nível analista, quando a linha não existe. */
+/**
+ * #41 Os valores padrão da migração, para o nível analista, quando a linha não existe. #42 O Clef tem 8 segundos
+ * (migração 20261117110000): com 3, a resposta que chega um pouco depois virava `clef_failed` sem precisar.
+ */
 export const DEFAULT_ANALYST_SETTINGS: EngineSettings = Object.freeze({
   level: 'analista',
   delegationEnabled: false,
   confidenceThreshold: 0.98,
-  clefTimeoutMs: 3000,
+  clefTimeoutMs: 8000,
 });

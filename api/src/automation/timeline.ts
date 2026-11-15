@@ -1,4 +1,5 @@
 // #211 AC-4 A linha do tempo da nota ("Como esta nota andou"), montada do que o banco já guarda.
+import { ENGINE_APPROVER } from '../domain/approval.js';
 
 /** #211 Quem fez o passo: o selo da tela. */
 export type TimelineActor = 'system' | 'rule' | 'claude' | 'engine' | 'person';
@@ -65,6 +66,9 @@ export function buildTimeline(facts: TimelineFacts, times: TimelineTimes): Timel
       // #211 A régua decide no mesmo instante em que propõe; a linha da proposta é gravada um pouco depois.
       const at = times.proposedAt && times.decidedAt && Date.parse(times.decidedAt) < Date.parse(times.proposedAt) ? times.proposedAt : times.decidedAt;
       add(at, 'decisao', `Aprovada pela regra: ${action}`, 'rule', 'Regra');
+    } else if (approval.approver === ENGINE_APPROVER) {
+      // #42 AC-4 O motor de decisão (modo delegado) só aprova a ação proposta, nunca altera.
+      add(times.decidedAt, 'decisao', `Aprovada pelo motor: ${action}`, 'engine', 'Motor');
     } else {
       add(times.decidedAt, 'decisao', `${state === 'alterada' ? 'Alterada' : 'Aprovada'}: ${action}`, 'person', approval.approver);
     }

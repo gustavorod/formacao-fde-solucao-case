@@ -313,7 +313,7 @@ describe('#41 a loja no Supabase', () => {
     } as const;
     expect(await store.record([decision])).toBe(1);
     expect(await store.record([decision])).toBe(0);
-    expect(await store.settings('analista')).toMatchObject({ confidenceThreshold: 0.98, clefTimeoutMs: 3000 });
+    expect(await store.settings('analista')).toMatchObject({ confidenceThreshold: 0.98, clefTimeoutMs: 8000 });
   });
 });
 

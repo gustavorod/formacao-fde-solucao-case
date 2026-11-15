@@ -60,7 +60,7 @@ aprova nada: não escreve em `approvals` nem muda `proposals`. O número de deci
   relatório e do modo delegado (#42). A justificativa e a evidência, que vêm de fora, vão no prompt entre
   `<justificativa>` e `<evidencia>`, com `<` e `>` trocados por `‹` e `›`; o prompt de sistema diz que o conteúdo
   delimitado é dado, nunca instrução, e a confiança só sai do JSON conferido (versão `clef-e4-v2`).
-- **Falha fechada:** o tempo limite é `engine_settings.clef_timeout_ms`. Falha, tempo esgotado ou resposta fora do
+- **Falha fechada:** o tempo limite é `engine_settings.clef_timeout_ms` (8 segundos no analista, #42). Falha, tempo esgotado ou resposta fora do
   formato ficam com a pessoa (`clef_failed`), com a classe do erro e a latência. Na medição, a falha grava
   `clef_failed` na linha `benchmark` e a decisão da regra fica como está. Se o motor inteiro falha, uma linha no
   log e a rodada segue.
@@ -122,6 +122,47 @@ proposta; nada novo é gravado.
   - `clef_failed`: das avaliadas, as que têm uma falha do Clef sem nenhuma resposta dele, as que ainda serão
     tentadas de novo e as que chegaram às 3 tentativas; mostra o quanto falta na amostra.
   - Divisão por zero dá `null`.
+
+## O motor de decisão em modo delegado (#42)
+
+Com `engine_settings.delegation_enabled` ligado para o nível analista, a rodada do Cron (`src/engine/delegated.ts`)
+decide com `mode = delegated` em vez de rodar a sombra. Liga e desliga no banco, nível a nível, sem deploy, e vale
+na rodada seguinte; desligada (o padrão), o modo sombra roda exatamente como acima, e nada vai para `approvals`.
+
+- **Quem aprova:** a regra que fecha a conta (`decided_by = rule`, confiança nula, versão `regra-e4-v1`) e o Clef com
+  confiança de `confidence_threshold` (0,98) ou mais e `outcome = approve`. A decisão é gravada antes e a aprovação
+  a cita: entra em `approvals` pelo mesmo caminho da aprovação da pessoa (`approve()` e `saveDecision`), com
+  `approver = 'motor'`, `approver_level = 'analista'`, `engine_decision_id`, `engine_confidence` e
+  `engine_model_version`; `approved_by` é gerada pelo banco (`engine`). O título vai para a lista do dia, e a ação
+  chega à doca na varredura da rodada seguinte do Cron. `automation_runs.engine_approved` conta as aprovações.
+- **Quem fica com a pessoa:** abaixo do limite, `below_confidence` com `recommendation` (`approve` ou `refuse`) e o
+  porquê, que a proposta mostra em `engine`; a falha do Clef (`clef_failed`, com a classe do erro e a latência, sem
+  nova tentativa no modo delegado); diretoria e bloqueio (`level_not_delegable`) e o resto das exclusões, que nunca
+  chegam ao Clef; o `refuse` do Clef no limite (o motor nunca recusa sozinho).
+- **A pessoa que decidiu antes ganha:** a proposta é relida na hora de aprovar. A corrida que só o banco vê
+  (`23505` em `approvals`) e a delegação desligada no meio (`23514` do gatilho) deixam a proposta com a pessoa sem
+  derrubar a rodada; a aprovação que não bate com a decisão (`23503`/`23514`) é erro de programação, vai para o log
+  e a rodada segue com as outras. A decisão `approve` gravada sem aprovação é a que ficou com a pessoa.
+- **Sem medição com a delegação ligada:** a rodada delegada não grava `benchmark` nem a sombra. O relatório de
+  acerto (`GET /api/motor/acerto`) continua só sobre `mode = shadow`: a proposta que o motor aprova não passa pela
+  pessoa, então não há com o que comparar. Para medir de novo, desliga-se a delegação.
+- **Teto:** até 10 propostas decididas e 5 chamadas ao Clef por rodada; o resto fica para a seguinte.
+- **A doca, a linha do tempo e a lista do dia** mostram o motor: `decidedBy` com `actor = 'engine'` e
+  `actor_name = 'Motor'`, o passo "Aprovada pelo motor" e `approvedBy = 'engine'` em `GET /api/hoje`.
+
+### Ligar a delegação
+
+Ligar é decisão de negócio (AC-6): só depois de o relatório do modo sombra mostrar, numa semana com pelo menos 20
+propostas decididas pela pessoa, `agreement_rate_at_threshold` de 0,98 ou mais. O código não confere isso. Na demo,
+liga-se à mão no banco:
+
+```sql
+-- Atenção: a partir da rodada seguinte o motor APROVA SOZINHO a E4 do analista e o título vai para a lista do dia.
+-- Só na demo, ou depois do acerto combinado com o CFO no modo sombra.
+update public.engine_settings set delegation_enabled = true, updated_at = now() where level = 'analista';
+-- Para voltar ao modo sombra:
+update public.engine_settings set delegation_enabled = false, updated_at = now() where level = 'analista';
+```
 
 ## Testar
 

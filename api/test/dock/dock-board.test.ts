@@ -138,6 +138,12 @@ describe('dockBoard: quem decidiu cada nota (#211)', () => {
     expect(by(third)).toBeNull();
   });
 
+  it('#42 a aprovação do motor (modo delegado) aparece como o motor: actor engine, nome Motor', () => {
+    const decisions = new Map<string, DockDecision>([[first, { approver: 'motor', approverLevel: 'analista' }]]);
+    const board = dockBoard({ invoices, published: [publish(first, DockAction.receive())], decisions, destination: 'CD-03', date: DATE });
+    expect(board.rows.find((r) => r.invoiceAccessKey === first)?.decidedBy).toEqual({ actor: 'engine', actor_name: 'Motor' });
+  });
+
   it('sem o mapa de decisões, toda linha leva decidedBy nulo', () => {
     const board = dockBoard({ invoices, published: [], destination: 'CD-03', date: DATE });
     expect(board.rows.every((r) => r.decidedBy === null)).toBe(true);

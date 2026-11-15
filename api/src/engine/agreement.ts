@@ -1,7 +1,7 @@
 // #41 AC-4 e AC-5 O motor ao lado da pessoa: o par motor × pessoa por proposta e o relatório de acerto por semana.
 // Tudo calculado na leitura, das linhas de engine_decisions e do estado da proposta; nada novo é gravado.
 import type { ProposalState } from '../domain/proposal.js';
-import type { DecidedBy, EngineMode, EngineOutcome, PendingReason, StoredDecision } from './decision.js';
+import type { DecidedBy, EngineMode, EngineOutcome, EngineRecommendation, PendingReason, StoredDecision } from './decision.js';
 import type { ProposalOutcomeRow } from './store.js';
 
 /**
@@ -45,6 +45,8 @@ export type EngineView = {
   readonly model_version: string;
   readonly reason: string;
   readonly pending_reason: PendingReason | null;
+  /** #42 AC-2 O que o motor recomenda quando a confiança ficou abaixo do limite (`below_confidence`); senão nulo. */
+  readonly recommendation: EngineRecommendation | null;
   readonly decided_at: string;
   /** #41 A medição do Clef, quando houver: a que o MCP App mostra como "Motor: aprovaria (0,97)". */
   readonly clef: {
@@ -75,6 +77,7 @@ export function engineView(rows: readonly StoredDecision[], state: ProposalState
     model_version: cascade.modelVersion,
     reason: cascade.reason,
     pending_reason: cascade.pendingReason,
+    recommendation: cascade.recommendation ?? null,
     decided_at: cascade.decidedAt,
     clef:
       clef === null
@@ -179,6 +182,12 @@ const ratio = (num: number, den: number): number | null => (den === 0 ? null : n
  *   chegaram ao teto de tentativas. A resposta de uma nova tentativa substitui a linha da falha, então a proposta
  *   sai daqui quando o Clef responde.
  * Divisão por zero dá nulo.
+ *
+ * #42 O relatório é só do modo sombra (`between('shadow', ...)`), também com a delegação ligada. A decisão do modo
+ * delegado não entra: a proposta que o motor aprova não passa mais pela pessoa, então não há com o que comparar, e
+ * só as que ele deixou com a pessoa teriam par; contá-las mediria o motor só nos casos difíceis e misturaria duas
+ * amostras. O relatório é a evidência para ligar a delegação (AC-6); com ela ligada, a sombra não grava (ver
+ * `runEngineRound`) e o que o motor aprovou se conta em `approvals.approved_by = 'engine'`.
  */
 export function agreementReport(input: {
   readonly weeks: readonly string[];

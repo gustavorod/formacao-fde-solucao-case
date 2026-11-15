@@ -2,7 +2,7 @@
 import { exceptionFields } from '../domain/exception-catalog.js';
 import { approverDirectory, type ApproverDirectory } from '../approval/approvers.js';
 import { AlreadyDecidedError, type ApprovalStore, type CaseFile } from '../approval/store.js';
-import { approve, NotAllowedToApproveError, type Decision } from '../domain/approval.js';
+import { approve, isEngineApproval, NotAllowedToApproveError, type Approval, type Decision } from '../domain/approval.js';
 import { ApprovalPolicy, type PersonLevel } from '../domain/approval-policy.js';
 import { DockAction, type PartialLine } from '../domain/dock-action.js';
 import { DomainError, InvalidTransitionError } from '../domain/errors.js';
@@ -187,10 +187,14 @@ async function proposalDetail(
 /**
  * #41 AC-4 O motor ao lado da pessoa: a decisão da cascata em modo sombra, a medição do Clef e, quando a pessoa
  * já decidiu, se concordou. Sem decisão do motor, nulo; um erro ao ler também, sem derrubar a proposta.
+ * #42 AC-2 A decisão do modo delegado vem primeiro, quando existe: é ela que leva a proposta à pessoa com a
+ * recomendação do motor e o porquê (`below_confidence`). Sem ela, a do modo sombra, como antes.
  */
 async function proposalEngine(key: string, file: CaseFile, engine?: ApprovalDeps['engine']): Promise<EngineView | null> {
   if (!engine) return null;
   try {
+    const delegated = engineView(await engine.forProposal(key, 'delegated'), file.proposal.state);
+    if (delegated) return delegated;
     return engineView(await engine.forProposal(key, 'shadow'), file.proposal.state);
   } catch (e) {
     console.error(`#41 motor da nota ${key} não lido: ${e instanceof Error ? e.name : 'erro'}`);
@@ -376,6 +380,13 @@ function parsePartialLine(raw: unknown): PartialLine {
   return { sku: l.sku, quantity: Quantity.of(l.quantity.amount, unit as Unit), disposition: l.disposition };
 }
 
+/** #42 AC-4 Quem aprovou, no vocabulário de `approvals.approved_by`. */
+function approvedByOf(approval: Approval | null): 'rule' | 'engine' | 'person' | null {
+  if (!approval) return null;
+  if (approval.approverLevel === 'regra') return 'rule';
+  return isEngineApproval(approval) ? 'engine' : 'person';
+}
+
 /** AC-13: os títulos liberados ou reduzidos no dia; nenhum bloqueado e nenhum de nota sem decisão. */
 async function todayList(store: ApprovalStore, day: string): Promise<Response> {
   const files = await store.listDecidedOn(day);
@@ -390,6 +401,9 @@ async function todayList(store: ApprovalStore, day: string): Promise<Response> {
     ...exceptionFields(f.proposal.classification),
     dockAction: f.proposal.dockAction.kind,
     approver: f.approval?.approver ?? null,
+    // #42 AC-4 Quem aprovou, como a coluna gerada `approvals.approved_by`: a régua, o motor ("Aprovado pelo motor")
+    // ou a pessoa.
+    approvedBy: approvedByOf(f.approval),
   }));
   const total = scheduled.reduce((sum, f) => sum + f.title.amount.cents, 0);
   return Response.json({ day, items, total: { cents: total } });

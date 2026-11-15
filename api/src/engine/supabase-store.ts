@@ -12,7 +12,7 @@ import {
   type Guard,
   type Shape,
 } from '../connectors/guards.js';
-import { SupabaseRestError, type SupabaseRest } from '../connectors/supabase-rest.js';
+import { postgresErrorOf, SupabaseRestError, type SupabaseRest } from '../connectors/supabase-rest.js';
 import {
   DEFAULT_ANALYST_SETTINGS,
   type EngineDecision,
@@ -59,11 +59,12 @@ type DecisionRow = {
   pending_reason: StoredDecision['pendingReason'];
   error: string | null;
   latency_ms: number | null;
+  recommendation: 'approve' | 'refuse' | null;
   decided_at: string;
 };
 
 const DECISION_COLUMNS =
-  'invoice_access_key,outcome,decided_by,confidence,model_version,mode,role,reason,pending_reason,error,latency_ms,decided_at';
+  'invoice_access_key,outcome,decided_by,confidence,model_version,mode,role,reason,pending_reason,error,latency_ms,recommendation,decided_at';
 
 const isDecisionRow = shaped<DecisionRow>({
   invoice_access_key: isString,
@@ -77,6 +78,8 @@ const isDecisionRow = shaped<DecisionRow>({
   pending_reason: nullable(oneOf('below_confidence', 'outside_criteria', 'level_not_delegable', 'delegation_off', 'clef_failed')),
   error: nullable(isString),
   latency_ms: nullable(isInteger),
+  // #42 A coluna da migração 20261117120000; a linha gravada antes dela (ou o fake sem ela) vale nula.
+  recommendation: (v: unknown): v is DecisionRow['recommendation'] => v === undefined || v === null || v === 'approve' || v === 'refuse',
   decided_at: isString,
 } satisfies Shape<DecisionRow>);
 
@@ -92,6 +95,7 @@ const decisionFromRow = (r: DecisionRow): StoredDecision => ({
   pendingReason: r.pending_reason,
   error: r.error,
   latencyMs: r.latency_ms,
+  recommendation: r.recommendation ?? null,
   decidedAt: r.decided_at,
 });
 
@@ -180,7 +184,43 @@ export class SupabaseEngineStore implements EngineStore, EngineReader {
    * primeira unicidade.
    */
   async record(decisions: readonly EngineDecision[]): Promise<number> {
-    if (decisions.length === 0) return 0;
+    const rows = await this.rowsOf(decisions);
+    const inserted = await this.rest.insert('engine_decisions', rows, {
+      onConflict: 'proposal_id,model_version,mode',
+      ignoreDuplicates: true,
+    });
+    return inserted.length;
+  }
+
+  /**
+   * #42 A decisão do modo delegado, uma por vez, com o id que a aprovação do motor cita. A linha que já existe na
+   * mesma proposta, versão e modo é ignorada (nulo); a cascata que já existe em outra versão bate na unicidade de
+   * uma cascata por proposta e modo (23505), e também é nulo: a outra rodada gravou antes e é ela que decide.
+   */
+  async recordWithId(decision: EngineDecision): Promise<number | null> {
+    const rows = await this.rowsOf([decision]);
+    if (rows.length === 0) return null;
+    let inserted: unknown[];
+    try {
+      inserted = await this.rest.insert('engine_decisions', rows, {
+        onConflict: 'proposal_id,model_version,mode',
+        ignoreDuplicates: true,
+      });
+    } catch (error) {
+      if (postgresErrorOf(error)?.code === '23505') return null;
+      throw error;
+    }
+    const [row] = parseRows(inserted, shaped<{ id: number }>({ id: isInteger }), 'engine_decisions');
+    return row?.id ?? null;
+  }
+
+  /**
+   * #41 Liga cada decisão à proposta da nota (uma por nota). A nota sem proposta fica de fora. A unicidade de uma
+   * cascata por proposta e modo é garantida pela rodada, que só grava a cascata da nota que ainda não tem; duas
+   * rodadas ao mesmo tempo gravam a mesma versão e caem na unicidade (proposta, versão, modo).
+   */
+  private async rowsOf(decisions: readonly EngineDecision[]): Promise<Record<string, unknown>[]> {
+    if (decisions.length === 0) return [];
     const keys = [...new Set(decisions.map((d) => d.invoiceAccessKey))];
     if (!keys.every(isAccessKey)) {
       throw new SupabaseRestError('insert', 'engine_decisions', 0, 'chave de acesso fora do formato');
@@ -194,7 +234,7 @@ export class SupabaseEngineStore implements EngineStore, EngineReader {
       'proposals',
     );
     const idByKey = new Map(proposals.map((p) => [p.invoice_access_key, p.id]));
-    const rows = decisions.flatMap((d) => {
+    return decisions.flatMap((d) => {
       const proposalId = idByKey.get(d.invoiceAccessKey);
       if (proposalId === undefined) return [];
       return [
@@ -211,14 +251,11 @@ export class SupabaseEngineStore implements EngineStore, EngineReader {
           pending_reason: d.pendingReason,
           error: d.error,
           latency_ms: d.latencyMs,
+          // #42 Só na pendência por confiança baixa; nas outras a restrição exige nula.
+          recommendation: d.recommendation ?? null,
         },
       ];
     });
-    const inserted = await this.rest.insert('engine_decisions', rows, {
-      onConflict: 'proposal_id,model_version,mode',
-      ignoreDuplicates: true,
-    });
-    return inserted.length;
   }
 
   /**
