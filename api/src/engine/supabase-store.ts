@@ -1,8 +1,25 @@
 // #41 A loja do motor no Supabase: engine_settings e engine_decisions (migrações 20261116110000 e 20261116120000).
-import { isBoolean, isInteger, isNumber, isString, parseRows, shaped, type Guard, type Shape } from '../connectors/guards.js';
+import {
+  isBoolean,
+  isInteger,
+  isNumber,
+  isString,
+  nullable,
+  oneOf,
+  parseRows,
+  shaped,
+  type Guard,
+  type Shape,
+} from '../connectors/guards.js';
 import { SupabaseRestError, type SupabaseRest } from '../connectors/supabase-rest.js';
-import { DEFAULT_ANALYST_SETTINGS, type EngineDecision, type EngineMode, type EngineSettings } from './decision.js';
-import type { EngineStore, Evaluated } from './store.js';
+import {
+  DEFAULT_ANALYST_SETTINGS,
+  type EngineDecision,
+  type EngineMode,
+  type EngineSettings,
+  type StoredDecision,
+} from './decision.js';
+import type { EngineReader, EngineStore, Evaluated, ProposalOutcomeRow } from './store.js';
 
 type SettingsRow = {
   level: string;
@@ -22,10 +39,67 @@ const isSettingsRow = shaped<SettingsRow>({
   clef_timeout_ms: isInteger,
 } satisfies Shape<SettingsRow>);
 
+type DecisionRow = {
+  invoice_access_key: string;
+  outcome: StoredDecision['outcome'];
+  decided_by: StoredDecision['decidedBy'];
+  confidence: number | string | null;
+  model_version: string;
+  mode: StoredDecision['mode'];
+  role: StoredDecision['role'];
+  reason: string;
+  pending_reason: StoredDecision['pendingReason'];
+  error: string | null;
+  latency_ms: number | null;
+  decided_at: string;
+};
+
+const DECISION_COLUMNS =
+  'invoice_access_key,outcome,decided_by,confidence,model_version,mode,role,reason,pending_reason,error,latency_ms,decided_at';
+
+const isDecisionRow = shaped<DecisionRow>({
+  invoice_access_key: isString,
+  outcome: oneOf('approve', 'refuse', 'pending'),
+  decided_by: oneOf('rule', 'clef', 'person'),
+  confidence: nullable(isNumeric),
+  model_version: isString,
+  mode: oneOf('shadow', 'delegated'),
+  role: oneOf('cascade', 'benchmark'),
+  reason: isString,
+  pending_reason: nullable(oneOf('below_confidence', 'outside_criteria', 'level_not_delegable', 'delegation_off', 'clef_failed')),
+  error: nullable(isString),
+  latency_ms: nullable(isInteger),
+  decided_at: isString,
+} satisfies Shape<DecisionRow>);
+
+const decisionFromRow = (r: DecisionRow): StoredDecision => ({
+  invoiceAccessKey: r.invoice_access_key,
+  outcome: r.outcome,
+  decidedBy: r.decided_by,
+  confidence: r.confidence === null ? null : Number(r.confidence),
+  modelVersion: r.model_version,
+  mode: r.mode,
+  role: r.role,
+  reason: r.reason,
+  pendingReason: r.pending_reason,
+  error: r.error,
+  latencyMs: r.latency_ms,
+  decidedAt: r.decided_at,
+});
+
+const isProposalOutcomeRow = shaped<{ invoice_access_key: string; classification: string; state: ProposalOutcomeRow['state'] }>({
+  invoice_access_key: isString,
+  classification: isString,
+  state: oneOf('registrada', 'aguardando_aprovacao', 'aprovada', 'alterada'),
+});
+
+/** #41 Notas por leitura de propostas: a lista vai no filtro `in.(...)` da URL. */
+const KEYS_PER_READ = 100;
+
 /** #63 A chave de acesso tem 44 dígitos; validar aqui protege os filtros `in.(...)` montados com ela. */
 const isAccessKey = (v: string): boolean => /^\d{44}$/.test(v);
 
-export class SupabaseEngineStore implements EngineStore {
+export class SupabaseEngineStore implements EngineStore, EngineReader {
   constructor(private readonly rest: SupabaseRest) {}
 
   async settings(level: string): Promise<EngineSettings> {
@@ -107,5 +181,45 @@ export class SupabaseEngineStore implements EngineStore {
       ignoreDuplicates: true,
     });
     return inserted.length;
+  }
+
+  /** #41 AC-4 As linhas do motor da nota no modo. A chave fora do formato não tem linha. */
+  async forProposal(invoiceAccessKey: string, mode: EngineMode): Promise<StoredDecision[]> {
+    if (!isAccessKey(invoiceAccessKey)) return [];
+    const rows = await this.rest.select('engine_decisions', {
+      select: DECISION_COLUMNS,
+      filters: { invoice_access_key: `eq.${invoiceAccessKey}`, mode: `eq.${mode}` },
+      order: 'decided_at',
+    });
+    return parseRows(rows, isDecisionRow, 'engine_decisions').map(decisionFromRow);
+  }
+
+  /** #41 AC-5 As linhas do modo a partir de um instante, pelo índice (mode, decided_at). */
+  async since(mode: EngineMode, fromIso: string): Promise<StoredDecision[]> {
+    const rows = await this.rest.select('engine_decisions', {
+      select: DECISION_COLUMNS,
+      filters: { mode: `eq.${mode}`, decided_at: `gte.${fromIso}` },
+      order: 'decided_at',
+    });
+    return parseRows(rows, isDecisionRow, 'engine_decisions').map(decisionFromRow);
+  }
+
+  /** #41 AC-5 A classificação e o estado das propostas, em leituras de até 100 notas. */
+  async proposals(invoiceAccessKeys: readonly string[]): Promise<ProposalOutcomeRow[]> {
+    const keys = [...new Set(invoiceAccessKeys)].filter(isAccessKey);
+    const out: ProposalOutcomeRow[] = [];
+    for (let i = 0; i < keys.length; i += KEYS_PER_READ) {
+      const chunk = keys.slice(i, i + KEYS_PER_READ);
+      const rows = parseRows(
+        await this.rest.select('proposals', {
+          select: 'invoice_access_key,classification,state',
+          filters: { invoice_access_key: `in.(${chunk.map((k) => `"${k}"`).join(',')})` },
+        }),
+        isProposalOutcomeRow,
+        'proposals',
+      );
+      out.push(...rows.map((r) => ({ invoiceAccessKey: r.invoice_access_key, classification: r.classification, state: r.state })));
+    }
+    return out;
   }
 }

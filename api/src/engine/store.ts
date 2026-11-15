@@ -1,4 +1,5 @@
 // #41 O que o motor lê e grava: a configuração por nível (engine_settings) e as decisões (engine_decisions).
+import type { ProposalState } from '../domain/proposal.js';
 import {
   DEFAULT_ANALYST_SETTINGS,
   type EngineDecision,
@@ -15,6 +16,13 @@ export type Evaluated = {
   readonly clef: ReadonlySet<string>;
 };
 
+/** #41 A proposta como o relatório a lê: a classificação e o estado (a decisão da pessoa). */
+export type ProposalOutcomeRow = {
+  readonly invoiceAccessKey: string;
+  readonly classification: string;
+  readonly state: ProposalState;
+};
+
 export interface EngineStore {
   /** #41 A configuração do nível; sem linha, os padrões da migração. */
   settings(level: string): Promise<EngineSettings>;
@@ -27,16 +35,33 @@ export interface EngineStore {
   record(decisions: readonly EngineDecision[]): Promise<number>;
 }
 
+/** #41 AC-4 e AC-5 O que a API lê do motor: as decisões de uma nota e as de um período, e as propostas. */
+export interface EngineReader {
+  settings(level: string): Promise<EngineSettings>;
+  /** #41 AC-4 Todas as linhas do motor da nota neste modo (cascata e medição). */
+  forProposal(invoiceAccessKey: string, mode: EngineMode): Promise<StoredDecision[]>;
+  /** #41 AC-5 As linhas do modo gravadas a partir de `fromIso` (cascata e medição). */
+  since(mode: EngineMode, fromIso: string): Promise<StoredDecision[]>;
+  /** #41 AC-5 A classificação e o estado das propostas destas notas. */
+  proposals(invoiceAccessKeys: readonly string[]): Promise<ProposalOutcomeRow[]>;
+}
+
 /** #41 Loja em memória: a dos testes. */
-export class MemoryEngineStore implements EngineStore {
+export class MemoryEngineStore implements EngineStore, EngineReader {
   readonly decisions: StoredDecision[] = [];
   private readonly levels = new Map<string, EngineSettings>();
+  private readonly proposalRows = new Map<string, ProposalOutcomeRow>();
 
   constructor(
     settings: readonly EngineSettings[] = [DEFAULT_ANALYST_SETTINGS],
     private readonly now: () => Date = () => new Date(),
   ) {
     for (const s of settings) this.levels.set(s.level, s);
+  }
+
+  /** #41 Para os testes do relatório: a classificação e o estado de uma proposta. */
+  setProposal(row: ProposalOutcomeRow): void {
+    this.proposalRows.set(row.invoiceAccessKey, row);
   }
 
   async settings(level: string): Promise<EngineSettings> {
@@ -66,5 +91,20 @@ export class MemoryEngineStore implements EngineStore {
       inserted += 1;
     }
     return inserted;
+  }
+
+  async forProposal(invoiceAccessKey: string, mode: EngineMode): Promise<StoredDecision[]> {
+    return this.decisions.filter((d) => d.invoiceAccessKey === invoiceAccessKey && d.mode === mode);
+  }
+
+  async since(mode: EngineMode, fromIso: string): Promise<StoredDecision[]> {
+    return this.decisions.filter((d) => d.mode === mode && Date.parse(d.decidedAt) >= Date.parse(fromIso));
+  }
+
+  async proposals(invoiceAccessKeys: readonly string[]): Promise<ProposalOutcomeRow[]> {
+    return invoiceAccessKeys.flatMap((k) => {
+      const row = this.proposalRows.get(k);
+      return row ? [row] : [];
+    });
   }
 }

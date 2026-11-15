@@ -114,6 +114,8 @@ export class FakePostgrest {
     if (table === 'proposals') return { id: this.nextId++, state: 'registrada', regua_line: null, created_at: now };
     if (table === 'approvals') return { id: this.nextId++, dock_action: null, decided_on: null, approved_at: now };
     if (table === 'titles') return { state: 'lancado', updated_at: now };
+    // #41 engine_decisions: a hora da decisão e o papel da linha têm default na migração.
+    if (table === 'engine_decisions') return { id: this.nextId++, role: 'cascade', decided_at: now, similar_cases: [], delegation_id: null };
     return {};
   }
 

@@ -66,6 +66,33 @@ aprova nada: não escreve em `approvals` nem muda `proposals`. O número de deci
   da versão atual do Clef (cascata ou medição) não volta ao Clef. No máximo 5 chamadas ao Clef por rodada, da
   cascata e da medição juntas, a cascata primeiro; o resto fica para a próxima.
 
+### O motor ao lado da pessoa (AC-4) e o relatório de acerto (AC-5)
+
+Calculados na leitura (`src/engine/agreement.ts`), das linhas de `engine_decisions` em modo sombra e do estado da
+proposta; nada novo é gravado.
+
+- **A decisão da pessoa:** aprovar e alterar gravam uma linha em `approvals`; o estado da proposta separa as duas.
+  `aprovada` é `approve`; `alterada` (a pessoa pediu outra ação na doca, não aprovou a proposta como veio) é
+  `refuse`. O par concorda quando o motor decidiu o mesmo; com a pessoa ainda sem decidir, ou com o motor deixando
+  com ela (`pending`), o par é nulo.
+- **`engine` na proposta** (`GET /api/propostas/:chave`, só acrescentado): a decisão efetiva da cascata
+  (`outcome`, `decided_by`, `confidence`, `model_version`, `reason`, `pending_reason`, `decided_at`), a medição do
+  Clef em `clef` (a linha mais recente com `decided_by = clef`, da cascata ou da medição, com o próprio
+  `agreement`), `person_outcome` e `agreement`. Sem decisão do motor, ou se a leitura falha, `engine` é nulo.
+- **`GET /api/motor/acerto`** (atrás do Access): `?semana=AAAA-MM-DD` (a semana desse dia) ou
+  `?de=AAAA-MM-DD&ate=AAAA-MM-DD` (as semanas do primeiro ao último, até 53); sem nada, as últimas 8. Uma linha por
+  semana (segunda a domingo, no fuso de Brasília) e classificação, só a E4 nesta história, mesmo a semana vazia.
+  A proposta entra na semana em que o motor gravou a decisão da cascata, com a classificação da proposta.
+  - `evaluated`: as propostas com a decisão da cascata na semana, exclusões incluídas.
+  - `decided_by_person`: delas, as já decididas pela pessoa.
+  - `agreement`: delas, as em que a cascata decidiu o mesmo que a pessoa (`pending` nunca é acerto);
+    `agreement_rate = agreement / decided_by_person`.
+  - `at_or_above_threshold`: das avaliadas, as que têm a medição do Clef com confiança igual ou acima do limite,
+    o `engine_settings.confidence_threshold` do analista (devolvido em `threshold`).
+  - `agreement_rate_at_threshold`: só nessas e já decididas pela pessoa, a parte em que o Clef decidiu o mesmo
+    que a pessoa (é o número que decide ligar a delegação, que é do Clef).
+  - Divisão por zero dá `null`.
+
 ## Testar
 
 ```bash

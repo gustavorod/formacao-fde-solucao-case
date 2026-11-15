@@ -12,6 +12,7 @@ import { me } from "./me";
 import { adminRoutes } from "./admin";
 import { automation } from "./automation";
 import { barredAmount } from "./barred-amount";
+import { engineAgreement } from "./engine";
 import { returnNoteRoutes, type ReturnNotesDeps } from "./return-notes";
 
 type PublicHandler = () => Response;
@@ -34,6 +35,7 @@ function protectedRoutes(deps: RouterDeps): Record<string, Record<string, Protec
     "/me": { GET: me },
     "/api/valor-barrado": { GET: barredAmount },
     "/api/automacao": { GET: automation },
+    "/api/motor/acerto": { GET: engineAgreement },
     "/api/doca": { GET: (_identity, request, env) => dock(request, env) },
     "/api/recebimento-loja": { GET: (_identity, request, env) => storeReceiving(request, env) },
     "/api/duplicates": { GET: (_identity, _request, env) => listDuplicates(duplicates(env)) },
