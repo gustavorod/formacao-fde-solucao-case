@@ -23,7 +23,7 @@ alter table public.engine_decisions
   add constraint engine_decisions_role_check check (role in ('cascade', 'benchmark')),
   -- #41 A medição é só do Clef: ou ele decidiu (com a confiança), ou falhou (`clef_failed`).
   add constraint engine_decisions_benchmark_clef_check check (
-    role = 'cascade' or decided_by = 'clef' or pending_reason = 'clef_failed'
+    role = 'cascade' or decided_by = 'clef' or pending_reason is not distinct from 'clef_failed'
   );
 
 -- #41 Uma proposta tem no máximo uma decisão da cascata por modo; a unicidade (proposta, versão, modo) segue
