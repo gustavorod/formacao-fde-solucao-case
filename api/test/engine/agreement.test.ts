@@ -236,6 +236,7 @@ describe('#41 AC-5 o relatório de acerto', () => {
         week: WEEK,
         classification: 'E4',
         evaluated: 0,
+        excluded: 0,
         decided_by_person: 0,
         agreement: 0,
         agreement_rate: null,
@@ -256,7 +257,7 @@ describe('#41 AC-5 o relatório de acerto', () => {
       clefRow(b!, 'refuse', 0.98),
       // c: o Clef decide na cascata com 0,90 (abaixo do limite) e aprova; pessoa aprova.
       row({ invoiceAccessKey: c!, decidedBy: 'clef', confidence: 0.9, modelVersion: 'clef-v1' }),
-      // d: exclusão, pendente com a pessoa; a pessoa aprova: decidida, nunca acerto.
+      // d: exclusão, pendente com a pessoa; a pessoa aprova: só em `excluded`, fora das contas de acerto.
       row({ invoiceAccessKey: d!, outcome: 'pending', decidedBy: 'person', pendingReason: 'outside_criteria' }),
       // e: regra aprova e Clef 0,99, mas a pessoa ainda não decidiu.
       row({ invoiceAccessKey: e! }),
@@ -277,10 +278,11 @@ describe('#41 AC-5 o relatório de acerto', () => {
       {
         week: WEEK,
         classification: 'E4',
-        evaluated: 5,
-        decided_by_person: 4,
+        evaluated: 4,
+        excluded: 1,
+        decided_by_person: 3,
         agreement: 2,
-        agreement_rate: 0.5,
+        agreement_rate: 2 / 3,
         at_or_above_threshold: 3,
         agreement_rate_at_threshold: 1,
       },
@@ -288,6 +290,7 @@ describe('#41 AC-5 o relatório de acerto', () => {
         week: '2026-11-16',
         classification: 'E4',
         evaluated: 0,
+        excluded: 0,
         decided_by_person: 0,
         agreement: 0,
         agreement_rate: null,
@@ -295,6 +298,20 @@ describe('#41 AC-5 o relatório de acerto', () => {
         agreement_rate_at_threshold: null,
       },
     ]);
+  });
+
+  it('as exclusões não diluem o acerto: cinco E4 elegíveis certas e cinco de R$ 50 mil aprovadas pela pessoa dão 1', () => {
+    const eligible = Array.from({ length: 5 }, () => accessKey());
+    const outside = Array.from({ length: 5 }, () => accessKey());
+    const decisions = [
+      ...eligible.map((k) => row({ invoiceAccessKey: k })),
+      ...outside.map((k) => row({ invoiceAccessKey: k, outcome: 'pending', decidedBy: 'person', pendingReason: 'outside_criteria' })),
+      row({ invoiceAccessKey: accessKey(), outcome: 'pending', decidedBy: 'person', pendingReason: 'level_not_delegable' }),
+    ];
+    const proposals = [...eligible, ...outside].map((k) => proposal(k, 'aprovada'));
+    proposals.push(proposal(decisions.at(-1)!.invoiceAccessKey, 'aprovada'));
+    const [item] = agreementReport({ weeks: [WEEK], threshold: 0.98, decisions, proposals });
+    expect(item).toMatchObject({ evaluated: 5, excluded: 6, decided_by_person: 5, agreement: 5, agreement_rate: 1 });
   });
 
   it('a medição que falhou (clef_failed) não conta como confiança', () => {
@@ -379,6 +396,7 @@ describe('#41 AC-5 GET /api/motor/acerto', () => {
           week: '2026-11-09',
           classification: 'E4',
           evaluated: 1,
+          excluded: 0,
           decided_by_person: 1,
           agreement: 1,
           agreement_rate: 1,

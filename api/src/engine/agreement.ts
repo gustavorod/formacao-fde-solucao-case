@@ -97,6 +97,8 @@ export type AgreementRow = {
   readonly week: string;
   readonly classification: string;
   readonly evaluated: number;
+  /** #41 As exclusões (AC-3) da semana: gravadas pela cascata, fora das contas de acerto. */
+  readonly excluded: number;
   readonly decided_by_person: number;
   readonly agreement: number;
   readonly agreement_rate: number | null;
@@ -134,6 +136,17 @@ export function weeksBetween(from: string, to: string): string[] {
   return weeks;
 }
 
+/**
+ * #41 Os motivos da exclusão (AC-3): a proposta fora da E4 até R$ 20 mil do analista. A cascata grava a linha,
+ * mas ela não entra nas contas de acerto, que são só das propostas que o motor avaliou de fato.
+ */
+const EXCLUSIONS: ReadonlySet<PendingReason> = new Set<PendingReason>(['outside_criteria', 'level_not_delegable']);
+
+/** #41 A proposta que caiu numa exclusão da cascata. */
+export function isExcluded(cascade: StoredDecision): boolean {
+  return cascade.pendingReason !== null && EXCLUSIONS.has(cascade.pendingReason);
+}
+
 const ratio = (num: number, den: number): number | null => (den === 0 ? null : num / den);
 
 /**
@@ -142,8 +155,10 @@ const ratio = (num: number, den: number): number | null => (den === 0 ? null : n
  * Sobre quais linhas cada número é calculado:
  * - A proposta entra na semana (de segunda a domingo, no fuso de Brasília) em que o motor gravou a decisão da
  *   cascata (`role = cascade`, `decided_at`), com a classificação da proposta.
- * - `evaluated`: as propostas com a decisão da cascata na semana, inclusive as exclusões e as que ficaram com a
- *   pessoa.
+ * - `excluded`: as propostas da semana que caíram numa exclusão da cascata (`outside_criteria` ou
+ *   `level_not_delegable`). Elas ficam só nesse campo: nenhum dos números abaixo as conta.
+ * - `evaluated`: as propostas elegíveis (a E4 até R$ 20 mil do analista, sem exclusão) com a decisão da cascata na
+ *   semana, inclusive as que ficaram com a pessoa porque o Clef falhou.
  * - `decided_by_person`: delas, as que a pessoa já decidiu (proposta `aprovada` ou `alterada`).
  * - `agreement`: delas, as em que a decisão efetiva da cascata é a mesma da pessoa; `pending` nunca conta como
  *   acerto, porque o motor não disse o que faria. `agreement_rate = agreement / decided_by_person`.
@@ -168,8 +183,8 @@ export function agreementReport(input: {
     else rowsByKey.set(d.invoiceAccessKey, [d]);
   }
 
-  type Tally = { evaluated: number; decided: number; agreement: number; atThreshold: number; decidedAt: number; agreementAt: number };
-  const empty = (): Tally => ({ evaluated: 0, decided: 0, agreement: 0, atThreshold: 0, decidedAt: 0, agreementAt: 0 });
+  type Tally = { evaluated: number; excluded: number; decided: number; agreement: number; atThreshold: number; decidedAt: number; agreementAt: number };
+  const empty = (): Tally => ({ evaluated: 0, excluded: 0, decided: 0, agreement: 0, atThreshold: 0, decidedAt: 0, agreementAt: 0 });
   const tallies = new Map<string, Tally>();
   const keyOf = (week: string, classification: string) => `${week}|${classification}`;
   for (const week of input.weeks) for (const c of REPORT_CLASSIFICATIONS) tallies.set(keyOf(week, c), empty());
@@ -180,6 +195,10 @@ export function agreementReport(input: {
     if (!cascade || !proposal) continue;
     const tally = tallies.get(keyOf(mondayOf(brasiliaDay(cascade.decidedAt)), proposal.classification));
     if (!tally) continue;
+    if (isExcluded(cascade)) {
+      tally.excluded += 1;
+      continue;
+    }
     const person = personOutcome(proposal.state);
     const clef = clefMeasure(rows);
     const atThreshold = clef !== null && clef.confidence !== null && clef.confidence >= input.threshold;
@@ -201,6 +220,7 @@ export function agreementReport(input: {
         week,
         classification,
         evaluated: t.evaluated,
+        excluded: t.excluded,
         decided_by_person: t.decided,
         agreement: t.agreement,
         agreement_rate: ratio(t.agreement, t.decided),

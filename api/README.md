@@ -83,7 +83,10 @@ proposta; nada novo é gravado.
   `?de=AAAA-MM-DD&ate=AAAA-MM-DD` (as semanas do primeiro ao último, até 53); sem nada, as últimas 8. Uma linha por
   semana (segunda a domingo, no fuso de Brasília) e classificação, só a E4 nesta história, mesmo a semana vazia.
   A proposta entra na semana em que o motor gravou a decisão da cascata, com a classificação da proposta.
-  - `evaluated`: as propostas com a decisão da cascata na semana, exclusões incluídas.
+  - `evaluated`: as propostas elegíveis (a E4 até R$ 20 mil do analista, sem exclusão) com a decisão da cascata
+    na semana. Só elas entram nos números abaixo.
+  - `excluded`: as que caíram numa exclusão da cascata (`outside_criteria` ou `level_not_delegable`); ficam fora
+    de todas as contas de acerto, para não diluir a taxa.
   - `decided_by_person`: delas, as já decididas pela pessoa.
   - `agreement`: delas, as em que a cascata decidiu o mesmo que a pessoa (`pending` nunca é acerto);
     `agreement_rate = agreement / decided_by_person`.
