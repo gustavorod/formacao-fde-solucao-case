@@ -104,6 +104,11 @@ export type AgreementRow = {
   readonly agreement_rate: number | null;
   readonly at_or_above_threshold: number;
   readonly agreement_rate_at_threshold: number | null;
+  /**
+   * #41 Das avaliadas, as que têm uma falha do Clef (`clef_failed`, na cascata ou na medição) ainda não refeita:
+   * nenhuma resposta do Clef para a proposta. A rodada tenta de novo; o número mostra o quanto falta na amostra.
+   */
+  readonly clef_failed: number;
 };
 
 /** #41 As classificações do relatório nesta história: só a E4 (E1 e E3 entram com a #46). */
@@ -167,6 +172,8 @@ const ratio = (num: number, den: number): number | null => (den === 0 ? null : n
  *   `engine_settings.confidence_threshold` do analista.
  * - `agreement_rate_at_threshold`: só nessas e já decididas pela pessoa, a parte em que o Clef decidiu o mesmo
  *   que a pessoa. É o número que decide ligar a delegação, que é do Clef.
+ * - `clef_failed`: das avaliadas, as que têm uma linha `clef_failed` e nenhuma resposta do Clef. A nova
+ *   tentativa substitui a linha da falha, então a proposta sai daqui quando o Clef responde.
  * Divisão por zero dá nulo.
  */
 export function agreementReport(input: {
@@ -183,8 +190,13 @@ export function agreementReport(input: {
     else rowsByKey.set(d.invoiceAccessKey, [d]);
   }
 
-  type Tally = { evaluated: number; excluded: number; decided: number; agreement: number; atThreshold: number; decidedAt: number; agreementAt: number };
-  const empty = (): Tally => ({ evaluated: 0, excluded: 0, decided: 0, agreement: 0, atThreshold: 0, decidedAt: 0, agreementAt: 0 });
+  type Tally = {
+    evaluated: number; excluded: number; decided: number; agreement: number;
+    atThreshold: number; decidedAt: number; agreementAt: number; clefFailed: number;
+  };
+  const empty = (): Tally => ({
+    evaluated: 0, excluded: 0, decided: 0, agreement: 0, atThreshold: 0, decidedAt: 0, agreementAt: 0, clefFailed: 0,
+  });
   const tallies = new Map<string, Tally>();
   const keyOf = (week: string, classification: string) => `${week}|${classification}`;
   for (const week of input.weeks) for (const c of REPORT_CLASSIFICATIONS) tallies.set(keyOf(week, c), empty());
@@ -204,6 +216,7 @@ export function agreementReport(input: {
     const atThreshold = clef !== null && clef.confidence !== null && clef.confidence >= input.threshold;
     tally.evaluated += 1;
     if (atThreshold) tally.atThreshold += 1;
+    if (clef === null && rows.some((r) => r.pendingReason === 'clef_failed')) tally.clefFailed += 1;
     if (person === null) continue;
     tally.decided += 1;
     if (agrees(cascade.outcome, person) === true) tally.agreement += 1;
@@ -226,6 +239,7 @@ export function agreementReport(input: {
         agreement_rate: ratio(t.agreement, t.decided),
         at_or_above_threshold: t.atThreshold,
         agreement_rate_at_threshold: ratio(t.agreementAt, t.decidedAt),
+        clef_failed: t.clefFailed,
       };
     }),
   );

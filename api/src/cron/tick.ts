@@ -191,8 +191,11 @@ async function runEngine(rest: SupabaseRest, env: Env): Promise<number> {
       clef: new WorkersAiClef(env.ai),
     });
     console.log(
-      `cron: motor (sombra), avaliadas ${round.evaluated}, medidas pelo Clef ${round.measured}, Clef ${round.clefCalls}, com falha ${round.clefFailed}, para a próxima rodada ${round.deferred}`,
+      `cron: motor (sombra), avaliadas ${round.evaluated}, medidas pelo Clef ${round.measured}, refeitas depois de falha ${round.retried}, Clef ${round.clefCalls}, com falha ${round.clefFailed}, para a próxima rodada ${round.deferred}`,
     );
+    if (round.writeError) {
+      console.log(`cron: motor (sombra), novas tentativas ou medição não gravadas (${round.writeError}); a próxima rodada repete`);
+    }
     return round.evaluated;
   } catch (error) {
     const status = error instanceof SupabaseRestError ? `HTTP ${error.status}` : "falha no motor";

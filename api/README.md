@@ -62,9 +62,15 @@ aprova nada: não escreve em `approvals` nem muda `proposals`. O número de deci
   formato ficam com a pessoa (`clef_failed`), com a classe do erro e a latência. Na medição, a falha grava
   `clef_failed` na linha `benchmark` e a decisão da regra fica como está. Se o motor inteiro falha, uma linha no
   log e a rodada segue.
-- **Idempotente:** a proposta que já tem a decisão da cascata no modo não volta à cascata, e a que já tem uma linha
-  da versão atual do Clef (cascata ou medição) não volta ao Clef. No máximo 5 chamadas ao Clef por rodada, da
-  cascata e da medição juntas, a cascata primeiro; o resto fica para a próxima.
+- **Idempotente:** a proposta que já tem a decisão da cascata no modo não volta à cascata, e a que já tem uma
+  resposta da versão atual do Clef (cascata ou medição) não volta ao Clef. No máximo 5 chamadas ao Clef por
+  rodada, da cascata e da medição juntas, a cascata primeiro; o resto fica para a próxima.
+- **A falha do Clef é tentada de novo:** a linha `clef_failed` da versão atual não conta como avaliada. Numa
+  rodada seguinte o Clef é chamado de novo, no mesmo papel (cascata ou medição), e a resposta substitui a linha da
+  falha por um `PATCH` filtrado por `pending_reason = clef_failed`: a resposta que deu certo nunca é sobrescrita, e
+  as unicidades de `engine_decisions` seguem as mesmas, sem migração. As novas tentativas entram no teto de 5,
+  depois do que nunca foi avaliado. Se a gravação das novas tentativas ou da medição falha, a cascata nova já
+  gravada segue contada em `engine_evaluated`.
 
 ### O motor ao lado da pessoa (AC-4) e o relatório de acerto (AC-5)
 
@@ -94,6 +100,8 @@ proposta; nada novo é gravado.
     o `engine_settings.confidence_threshold` do analista (devolvido em `threshold`).
   - `agreement_rate_at_threshold`: só nessas e já decididas pela pessoa, a parte em que o Clef decidiu o mesmo
     que a pessoa (é o número que decide ligar a delegação, que é do Clef).
+  - `clef_failed`: das avaliadas, as que têm uma falha do Clef ainda não refeita (nenhuma resposta dele); mostra
+    o quanto falta na amostra enquanto a rodada tenta de novo.
   - Divisão por zero dá `null`.
 
 ## Testar

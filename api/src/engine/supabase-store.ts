@@ -19,7 +19,7 @@ import {
   type EngineSettings,
   type StoredDecision,
 } from './decision.js';
-import type { EngineReader, EngineStore, Evaluated, ProposalOutcomeRow } from './store.js';
+import { isClefFailure, type EngineReader, type EngineStore, type Evaluated, type ProposalOutcomeRow } from './store.js';
 
 type SettingsRow = {
   level: string;
@@ -87,6 +87,14 @@ const decisionFromRow = (r: DecisionRow): StoredDecision => ({
   decidedAt: r.decided_at,
 });
 
+type EvaluatedRow = { invoice_access_key: string; role: StoredDecision['role']; pending_reason: StoredDecision['pendingReason'] };
+
+const isEvaluatedRow = shaped<EvaluatedRow>({
+  invoice_access_key: isString,
+  role: oneOf('cascade', 'benchmark'),
+  pending_reason: nullable(oneOf('below_confidence', 'outside_criteria', 'level_not_delegable', 'delegation_off', 'clef_failed')),
+} satisfies Shape<EvaluatedRow>);
+
 const isProposalOutcomeRow = shaped<{ invoice_access_key: string; classification: string; state: ProposalOutcomeRow['state'] }>({
   invoice_access_key: isString,
   classification: isString,
@@ -118,21 +126,30 @@ export class SupabaseEngineStore implements EngineStore, EngineReader {
     };
   }
 
-  /** #41 Duas leituras: as notas com a decisão da cascata e as que já têm a versão atual do Clef. */
+  /**
+   * #41 Duas leituras: as notas com a decisão da cascata e as linhas da versão atual do Clef, separadas entre a
+   * resposta (já medida) e a falha (`clef_failed`, que a rodada tenta de novo).
+   */
   async evaluated(mode: EngineMode, clefVersion: string): Promise<Evaluated> {
-    const keys = async (filters: Record<string, string>) =>
-      new Set(
-        parseRows(
-          await this.rest.select('engine_decisions', { select: 'invoice_access_key', filters: { mode: `eq.${mode}`, ...filters } }),
-          shaped<{ invoice_access_key: string }>({ invoice_access_key: isString }),
-          'engine_decisions',
-        ).map((r) => r.invoice_access_key),
+    const read = async (filters: Record<string, string>) =>
+      parseRows(
+        await this.rest.select('engine_decisions', {
+          select: 'invoice_access_key,role,pending_reason',
+          filters: { mode: `eq.${mode}`, ...filters },
+        }),
+        isEvaluatedRow,
+        'engine_decisions',
       );
-    const [cascade, clef] = await Promise.all([
-      keys({ role: 'eq.cascade' }),
-      keys({ model_version: `eq.${clefVersion}` }),
+    const [cascadeRows, current] = await Promise.all([
+      read({ role: 'eq.cascade' }),
+      read({ model_version: `eq.${clefVersion}` }),
     ]);
-    return { cascade, clef };
+    const failure = (r: EvaluatedRow) => isClefFailure({ pendingReason: r.pending_reason });
+    return {
+      cascade: new Set(cascadeRows.map((r) => r.invoice_access_key)),
+      clef: new Set(current.filter((r) => !failure(r)).map((r) => r.invoice_access_key)),
+      failed: new Map(current.filter(failure).map((r) => [r.invoice_access_key, r.role])),
+    };
   }
 
   /**
@@ -181,6 +198,43 @@ export class SupabaseEngineStore implements EngineStore, EngineReader {
       ignoreDuplicates: true,
     });
     return inserted.length;
+  }
+
+  /**
+   * #41 A nova tentativa do Clef: um PATCH por decisão, filtrado pela proposta, versão, modo, papel e
+   * `pending_reason = clef_failed`. O filtro garante que só a linha de falha é trocada (o Postgres reconfere o
+   * WHERE depois do lock, então duas rodadas ao mesmo tempo nunca sobrescrevem uma resposta); as chaves da linha
+   * não mudam, e as duas unicidades seguem valendo. `decided_at` passa a ser a hora da nova tentativa.
+   */
+  async replaceFailed(decisions: readonly EngineDecision[]): Promise<number> {
+    let replaced = 0;
+    for (const d of decisions) {
+      if (!isAccessKey(d.invoiceAccessKey)) {
+        throw new SupabaseRestError('update', 'engine_decisions', 0, 'chave de acesso fora do formato');
+      }
+      const rows = await this.rest.update(
+        'engine_decisions',
+        {
+          invoice_access_key: `eq.${d.invoiceAccessKey}`,
+          model_version: `eq.${d.modelVersion}`,
+          mode: `eq.${d.mode}`,
+          role: `eq.${d.role}`,
+          pending_reason: 'eq.clef_failed',
+        },
+        {
+          outcome: d.outcome,
+          decided_by: d.decidedBy,
+          confidence: d.confidence,
+          reason: d.reason,
+          pending_reason: d.pendingReason,
+          error: d.error,
+          latency_ms: d.latencyMs,
+          decided_at: new Date().toISOString(),
+        },
+      );
+      replaced += rows.length;
+    }
+    return replaced;
   }
 
   /** #41 AC-4 As linhas do motor da nota no modo. A chave fora do formato não tem linha. */

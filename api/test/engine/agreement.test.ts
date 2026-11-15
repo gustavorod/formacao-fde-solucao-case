@@ -242,6 +242,7 @@ describe('#41 AC-5 o relatório de acerto', () => {
         agreement_rate: null,
         at_or_above_threshold: 0,
         agreement_rate_at_threshold: null,
+        clef_failed: 0,
       },
     ]);
   });
@@ -285,6 +286,7 @@ describe('#41 AC-5 o relatório de acerto', () => {
         agreement_rate: 2 / 3,
         at_or_above_threshold: 3,
         agreement_rate_at_threshold: 1,
+        clef_failed: 0,
       },
       {
         week: '2026-11-16',
@@ -296,6 +298,7 @@ describe('#41 AC-5 o relatório de acerto', () => {
         agreement_rate: null,
         at_or_above_threshold: 0,
         agreement_rate_at_threshold: null,
+        clef_failed: 0,
       },
     ]);
   });
@@ -323,7 +326,22 @@ describe('#41 AC-5 o relatório de acerto', () => {
     const [item] = agreementReport({
       weeks: [WEEK], threshold: 0.98, decisions: [row({ invoiceAccessKey: key }), failed], proposals: [proposal(key, 'aprovada')],
     });
-    expect(item).toMatchObject({ evaluated: 1, decided_by_person: 1, agreement: 1, at_or_above_threshold: 0, agreement_rate_at_threshold: null });
+    expect(item).toMatchObject({ evaluated: 1, decided_by_person: 1, agreement: 1, at_or_above_threshold: 0, agreement_rate_at_threshold: null, clef_failed: 1 });
+  });
+
+  it('clef_failed conta a proposta sem resposta do Clef; a que já tem resposta (de outra versão) não conta', () => {
+    const [failedCascade, answeredLater] = [accessKey(), accessKey()];
+    const failure = (key: string, role: 'cascade' | 'benchmark', modelVersion: string) =>
+      row({ invoiceAccessKey: key, outcome: 'pending', decidedBy: 'person', pendingReason: 'clef_failed', role, modelVersion, error: 'ClefTimeoutError' });
+    const decisions = [
+      failure(failedCascade, 'cascade', 'clef-v1'),
+      row({ invoiceAccessKey: answeredLater }),
+      failure(answeredLater, 'benchmark', 'clef-v1'),
+      { ...clefRow(answeredLater, 'approve', 0.99), modelVersion: 'clef-v2' },
+    ];
+    const proposals = [proposal(failedCascade, 'aguardando_aprovacao'), proposal(answeredLater, 'aguardando_aprovacao')];
+    const [item] = agreementReport({ weeks: [WEEK], threshold: 0.98, decisions, proposals });
+    expect(item).toMatchObject({ evaluated: 2, clef_failed: 1, at_or_above_threshold: 1 });
   });
 });
 
@@ -402,6 +420,7 @@ describe('#41 AC-5 GET /api/motor/acerto', () => {
           agreement_rate: 1,
           at_or_above_threshold: 1,
           agreement_rate_at_threshold: 1,
+          clef_failed: 0,
         },
       ],
     });

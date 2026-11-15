@@ -4,17 +4,26 @@ import {
   DEFAULT_ANALYST_SETTINGS,
   type EngineDecision,
   type EngineMode,
+  type EngineRole,
   type EngineSettings,
   type StoredDecision,
 } from './decision.js';
 
-/** #41 O que já foi avaliado num modo: as notas com a decisão da cascata e as que já têm a versão atual do Clef. */
+/**
+ * #41 O que já foi avaliado num modo: as notas com a decisão da cascata, as que já têm a versão atual do Clef e
+ * as em que a versão atual do Clef falhou e ainda pode ser tentada de novo.
+ */
 export type Evaluated = {
   /** #41 Notas que já têm a decisão efetiva da cascata (`role = cascade`), em qualquer versão. */
   readonly cascade: ReadonlySet<string>;
-  /** #41 Notas que já têm uma linha da versão atual do Clef, da cascata ou da medição. */
+  /** #41 Notas com uma resposta da versão atual do Clef, da cascata ou da medição; a falha não conta. */
   readonly clef: ReadonlySet<string>;
+  /** #41 Notas cuja linha da versão atual do Clef é `clef_failed`, com o papel dessa linha. */
+  readonly failed: ReadonlyMap<string, EngineRole>;
 };
+
+/** #41 A linha que só registra a falha do Clef: a única que uma nova tentativa pode substituir. */
+export const isClefFailure = (d: Pick<EngineDecision, 'pendingReason'>): boolean => d.pendingReason === 'clef_failed';
 
 /** #41 A proposta como o relatório a lê: a classificação e o estado (a decisão da pessoa). */
 export type ProposalOutcomeRow = {
@@ -33,6 +42,11 @@ export interface EngineStore {
    * proposta, versão e modo é ignorada (a unicidade de engine_decisions).
    */
   record(decisions: readonly EngineDecision[]): Promise<number>;
+  /**
+   * #41 Grava a nova tentativa do Clef por cima da linha `clef_failed` da mesma proposta, versão, modo e papel, e
+   * devolve quantas trocou. Só a linha de falha é trocada: a resposta que já deu certo nunca é sobrescrita.
+   */
+  replaceFailed(decisions: readonly EngineDecision[]): Promise<number>;
 }
 
 /** #41 AC-4 e AC-5 O que a API lê do motor: as decisões de uma nota e as de um período, e as propostas. */
@@ -70,9 +84,11 @@ export class MemoryEngineStore implements EngineStore, EngineReader {
 
   async evaluated(mode: EngineMode, clefVersion: string): Promise<Evaluated> {
     const inMode = this.decisions.filter((d) => d.mode === mode);
+    const current = inMode.filter((d) => d.modelVersion === clefVersion);
     return {
       cascade: new Set(inMode.filter((d) => d.role === 'cascade').map((d) => d.invoiceAccessKey)),
-      clef: new Set(inMode.filter((d) => d.modelVersion === clefVersion).map((d) => d.invoiceAccessKey)),
+      clef: new Set(current.filter((d) => !isClefFailure(d)).map((d) => d.invoiceAccessKey)),
+      failed: new Map(current.filter(isClefFailure).map((d) => [d.invoiceAccessKey, d.role])),
     };
   }
 
@@ -91,6 +107,24 @@ export class MemoryEngineStore implements EngineStore, EngineReader {
       inserted += 1;
     }
     return inserted;
+  }
+
+  async replaceFailed(decisions: readonly EngineDecision[]): Promise<number> {
+    let replaced = 0;
+    for (const d of decisions) {
+      const i = this.decisions.findIndex(
+        (x) =>
+          x.invoiceAccessKey === d.invoiceAccessKey &&
+          x.mode === d.mode &&
+          x.modelVersion === d.modelVersion &&
+          x.role === d.role &&
+          isClefFailure(x),
+      );
+      if (i < 0) continue;
+      this.decisions[i] = { ...d, decidedAt: this.now().toISOString() };
+      replaced += 1;
+    }
+    return replaced;
   }
 
   async forProposal(invoiceAccessKey: string, mode: EngineMode): Promise<StoredDecision[]> {
