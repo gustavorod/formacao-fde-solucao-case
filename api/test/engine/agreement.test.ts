@@ -385,7 +385,7 @@ describe('#41 AC-5 GET /api/motor/acerto', () => {
   });
 
   it('lê as decisões, as propostas e o limite do analista, e devolve a semana pedida só com a E4', async () => {
-    const [a, b, old] = [accessKey(), accessKey(), accessKey()];
+    const [a, b, old, next] = [accessKey(), accessKey(), accessKey(), accessKey()];
     const fake = new FakePostgrest({
       engine_decisions: [
         decisionRow(a, 'cascade', 'rule', null, '2026-11-10T12:00:00Z'),
@@ -393,11 +393,14 @@ describe('#41 AC-5 GET /api/motor/acerto', () => {
         decisionRow(b, 'cascade', 'person', null, '2026-11-11T12:00:00Z', { outcome: 'pending', pending_reason: 'outside_criteria' }),
         // #41 Da semana anterior: fora do período pedido.
         decisionRow(old, 'cascade', 'rule', null, '2026-11-03T12:00:00Z'),
+        // #41 Segunda seguinte, 00:00 em Brasília: já fora do período (o limite de cima é excluído).
+        decisionRow(next, 'cascade', 'rule', null, '2026-11-16T03:00:00Z'),
       ],
       proposals: [
         { id: 1, invoice_access_key: a, classification: 'E4', state: 'aprovada' },
         { id: 2, invoice_access_key: b, classification: 'E6', state: 'aprovada' },
         { id: 3, invoice_access_key: old, classification: 'E4', state: 'aprovada' },
+        { id: 4, invoice_access_key: next, classification: 'E4', state: 'aprovada' },
       ],
       engine_settings: [{ level: 'analista', delegation_enabled: false, confidence_threshold: 0.95, clef_timeout_ms: 3000 }],
     });
@@ -426,6 +429,8 @@ describe('#41 AC-5 GET /api/motor/acerto', () => {
     });
     const read = fake.requests.find((r) => r.url.includes('/engine_decisions'));
     expect(new URL(read?.url ?? '').searchParams.get('decided_at')).toBe('gte.2026-11-09T03:00:00.000Z');
+    // #41 Período fechado: até a meia-noite da segunda seguinte, em Brasília, excluída.
+    expect(new URL(read?.url ?? '').searchParams.get('and')).toBe('(decided_at.lt."2026-11-16T03:00:00.000Z")');
   });
 
   it('se o Supabase falha, 502 sem o corpo do erro', async () => {

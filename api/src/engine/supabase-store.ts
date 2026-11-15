@@ -248,11 +248,14 @@ export class SupabaseEngineStore implements EngineStore, EngineReader {
     return parseRows(rows, isDecisionRow, 'engine_decisions').map(decisionFromRow);
   }
 
-  /** #41 AC-5 As linhas do modo a partir de um instante, pelo índice (mode, decided_at). */
-  async since(mode: EngineMode, fromIso: string): Promise<StoredDecision[]> {
+  /**
+   * #41 AC-5 As linhas do modo num período fechado, pelo índice (mode, decided_at). O limite de cima vai no `and`
+   * do PostgREST, porque a coluna já tem o filtro de baixo; o instante vai entre aspas (tem `:` e `.`).
+   */
+  async between(mode: EngineMode, fromIso: string, toIso: string): Promise<StoredDecision[]> {
     const rows = await this.rest.select('engine_decisions', {
       select: DECISION_COLUMNS,
-      filters: { mode: `eq.${mode}`, decided_at: `gte.${fromIso}` },
+      filters: { mode: `eq.${mode}`, decided_at: `gte.${fromIso}`, and: `(decided_at.lt."${toIso}")` },
       order: 'decided_at',
     });
     return parseRows(rows, isDecisionRow, 'engine_decisions').map(decisionFromRow);

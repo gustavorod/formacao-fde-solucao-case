@@ -134,6 +134,16 @@ export class FakePostgrest {
         if (row[col] === null || row[col] === undefined) return false;
         continue;
       }
+      // #41 and=(col.lt."v"): o limite de cima de um período, quando a coluna já tem outro filtro.
+      if (col === 'and') {
+        const inner = /^\((.*)\)$/.exec(expr)?.[1] ?? '';
+        for (const part of inner.split(',')) {
+          const m = /^([a-z_]+)\.lt\."?([^"]*)"?$/.exec(part);
+          if (!m) throw new Error(`fake: filtro and não suportado ${part}`);
+          if (!(Date.parse(String(row[m[1] ?? ''])) < Date.parse(m[2] ?? ''))) return false;
+        }
+        continue;
+      }
       if (expr.startsWith('gte.')) {
         if (Date.parse(String(row[col])) < Date.parse(expr.slice(4))) return false;
         continue;

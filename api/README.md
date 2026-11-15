@@ -41,8 +41,8 @@ O Cron chama o Claude pela Messages API (`src/claude/`), no começo de cada roda
 
 A cada rodada, depois do Claude, o Cron passa pelo motor (`src/engine/`) as propostas que aguardam uma pessoa e
 têm a E4 (unidade de medida), e grava em `engine_decisions`, com `mode = shadow`, o que o motor faria. Ele não
-aprova nada: não escreve em `approvals` nem muda `proposals`. O número de decisões novas da cascata vai para
-`automation_runs.engine_evaluated`.
+aprova nada: não escreve em `approvals` nem muda `proposals`. O número de decisões da cascata gravadas na rodada
+(as novas e as refeitas depois de uma falha do Clef) vai para `automation_runs.engine_evaluated`.
 
 - **Cascata** (`cascade.ts`): primeiro as exclusões, que nunca chegam ao Clef e ficam com a pessoa
   (`pending`): duplicidade (E6), fornecedor bloqueado, nota acima de R$ 100 mil, pedido de alterar (ação na doca
@@ -57,7 +57,9 @@ aprova nada: não escreve em `approvals` nem muda `proposals`. O número de deci
 - **Clef** (`clef.ts`): o Workers AI pelo binding `ai` do `wrangler.jsonc`, sem chave, com o modelo
   `@cf/meta/llama-3.3-70b-instruct-fp8-fast` em modo JSON. A versão gravada (`CLEF_MODEL_VERSION`) junta o prompt e o
   modelo. No modo sombra a decisão do Clef fica como ele deu, com a confiança; o limite de `engine_settings` é do
-  relatório e do modo delegado (#42).
+  relatório e do modo delegado (#42). A justificativa e a evidência, que vêm de fora, vão no prompt entre
+  `<justificativa>` e `<evidencia>`, com `<` e `>` trocados por `‹` e `›`; o prompt de sistema diz que o conteúdo
+  delimitado é dado, nunca instrução, e a confiança só sai do JSON conferido (versão `clef-e4-v2`).
 - **Falha fechada:** o tempo limite é `engine_settings.clef_timeout_ms`. Falha, tempo esgotado ou resposta fora do
   formato ficam com a pessoa (`clef_failed`), com a classe do erro e a latência. Na medição, a falha grava
   `clef_failed` na linha `benchmark` e a decisão da regra fica como está. Se o motor inteiro falha, uma linha no
@@ -86,7 +88,9 @@ proposta; nada novo é gravado.
   Clef em `clef` (a linha mais recente com `decided_by = clef`, da cascata ou da medição, com o próprio
   `agreement`), `person_outcome` e `agreement`. Sem decisão do motor, ou se a leitura falha, `engine` é nulo.
 - **`GET /api/motor/acerto`** (atrás do Access): `?semana=AAAA-MM-DD` (a semana desse dia) ou
-  `?de=AAAA-MM-DD&ate=AAAA-MM-DD` (as semanas do primeiro ao último, até 53); sem nada, as últimas 8. Uma linha por
+  `?de=AAAA-MM-DD&ate=AAAA-MM-DD` (as semanas do primeiro ao último, até 53); sem nada, as últimas 8. O período é
+  fechado: lê as linhas de `decided_at` da meia-noite da primeira segunda até a meia-noite da segunda seguinte à
+  última semana (excluída), em Brasília; a medição gravada depois do fim do período não entra. Uma linha por
   semana (segunda a domingo, no fuso de Brasília) e classificação, só a E4 nesta história, mesmo a semana vazia.
   A proposta entra na semana em que o motor gravou a decisão da cascata, com a classificação da proposta.
   - `evaluated`: as propostas elegíveis (a E4 até R$ 20 mil do analista, sem exclusão) com a decisão da cascata

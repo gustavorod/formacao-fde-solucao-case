@@ -44,14 +44,19 @@ export function requestedWeeks(params: URLSearchParams, today: string): { weeks:
   return { weeks };
 }
 
+/** #41 Meia-noite de um dia em Brasília (UTC-3, sem horário de verão desde 2019), em ISO. */
+const brasiliaMidnight = (day: string): string => new Date(`${day}T00:00:00-03:00`).toISOString();
+
 /**
- * #41 AC-5 Monta o relatório: as linhas do motor desde a primeira segunda (meia-noite em Brasília, UTC-3), a
- * classificação e o estado das propostas, e o limite do analista. A medição do Clef de uma proposta é sempre
- * gravada na rodada da cascata ou depois, então ler a partir do começo do período a alcança.
+ * #41 AC-5 Monta o relatório: as linhas do motor no período fechado, da meia-noite da primeira segunda até a
+ * meia-noite da segunda seguinte à última semana (excluída), em Brasília; a classificação e o estado das
+ * propostas, e o limite do analista. A medição do Clef gravada depois do fim do período não entra: o relatório
+ * de um período conta o que o motor gravou dentro dele.
  */
 export async function engineAgreementReport(reader: EngineReader, weeks: readonly string[]) {
   const first = weeks[0] ?? '';
-  const decisions = await reader.since(REPORT_MODE, new Date(`${first}T00:00:00-03:00`).toISOString());
+  const last = weeks.at(-1) ?? first;
+  const decisions = await reader.between(REPORT_MODE, brasiliaMidnight(first), brasiliaMidnight(addDays(last, 7)));
   const keys = [...new Set(decisions.filter((d) => d.role === 'cascade').map((d) => d.invoiceAccessKey))];
   const [proposals, settings] = await Promise.all([reader.proposals(keys), reader.settings(REPORT_LEVEL)]);
   return {
@@ -59,7 +64,7 @@ export async function engineAgreementReport(reader: EngineReader, weeks: readonl
     level: REPORT_LEVEL,
     threshold: settings.confidenceThreshold,
     from: first,
-    to: addDays(weeks.at(-1) ?? first, 6),
+    to: addDays(last, 6),
     items: agreementReport({ weeks, threshold: settings.confidenceThreshold, decisions, proposals }),
   };
 }

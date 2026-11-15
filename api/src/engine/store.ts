@@ -54,8 +54,8 @@ export interface EngineReader {
   settings(level: string): Promise<EngineSettings>;
   /** #41 AC-4 Todas as linhas do motor da nota neste modo (cascata e medição). */
   forProposal(invoiceAccessKey: string, mode: EngineMode): Promise<StoredDecision[]>;
-  /** #41 AC-5 As linhas do modo gravadas a partir de `fromIso` (cascata e medição). */
-  since(mode: EngineMode, fromIso: string): Promise<StoredDecision[]>;
+  /** #41 AC-5 As linhas do modo gravadas de `fromIso` (incluído) até `toIso` (excluído), cascata e medição. */
+  between(mode: EngineMode, fromIso: string, toIso: string): Promise<StoredDecision[]>;
   /** #41 AC-5 A classificação e o estado das propostas destas notas. */
   proposals(invoiceAccessKeys: readonly string[]): Promise<ProposalOutcomeRow[]>;
 }
@@ -131,8 +131,9 @@ export class MemoryEngineStore implements EngineStore, EngineReader {
     return this.decisions.filter((d) => d.invoiceAccessKey === invoiceAccessKey && d.mode === mode);
   }
 
-  async since(mode: EngineMode, fromIso: string): Promise<StoredDecision[]> {
-    return this.decisions.filter((d) => d.mode === mode && Date.parse(d.decidedAt) >= Date.parse(fromIso));
+  async between(mode: EngineMode, fromIso: string, toIso: string): Promise<StoredDecision[]> {
+    const [from, to] = [Date.parse(fromIso), Date.parse(toIso)];
+    return this.decisions.filter((d) => d.mode === mode && Date.parse(d.decidedAt) >= from && Date.parse(d.decidedAt) < to);
   }
 
   async proposals(invoiceAccessKeys: readonly string[]): Promise<ProposalOutcomeRow[]> {
