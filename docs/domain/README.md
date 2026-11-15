@@ -262,7 +262,14 @@ Numeradas para os testes citarem.
 7. O encaminhamento nunca fica abaixo do limite de aprovação, calculado sobre todas as divergências.
    Pode subir, nunca descer, salvo o E7, que absorve E5 e E8 (#177): a compra de emergência já paga não tem ordem nem cadastro por natureza.
 8. Só uma pessoa com nível igual ou acima do encaminhamento aprova, e uma vez só. Alterar exige
-   justificativa. O agente nunca aprova. O match é aprovado pela regra, sem pessoa.
+   justificativa. O match é aprovado pela regra, sem pessoa. O **motor de decisão** (#42) aprova sem
+   pessoa só dentro destes limites: no nível analista (a E4 até R$ 20 mil), com a delegação do nível
+   ligada (`engine_settings.delegation_enabled`) e com a regra fechando a conta ou a confiança do Clef no
+   limite ou acima (`confidence_threshold`, 0,98). Abaixo do limite, a proposta vai para a pessoa com a
+   recomendação do motor e o porquê. O motor nunca aprova diretoria nem bloqueio, nunca altera a ação
+   proposta e não decide a proposta que a pessoa já decidiu. A aprovação dele fica registrada como do
+   motor, com a confiança e a versão do modelo. O agente de IA (o Claude que propõe, escreve o dossiê
+   ou sugere) continua nunca aprovando.
 
 ## Oportunidades de agente
 
@@ -271,7 +278,7 @@ Evolução, fora da 1ª entrega.
 | # | Contexto | Ideia | O que muda |
 |---|---|---|---|
 | 1 | Recebimento | **Contagem por foto:** foto do pallet na entrega; um agente conta pela imagem, como contraponto à contagem do operador | A diferença entre as duas contagens vira evidência da divergência |
-| 2 | Conferência | **Agente de aprovação:** nos nós "Aprovar a proposta" e "Aprovar com a contagem" do BPMN, o agente de aprovação aprova quando a confiança passa do limite e o critério está claro; abaixo disso, encaminha para uma pessoa decisora | **Muda a regra 8** ("o agente nunca aprova"). Pede um limite de confiança por nível |
+| 2 | Conferência | **Agente de aprovação:** nos nós "Aprovar a proposta" e "Aprovar com a contagem" do BPMN, o agente de aprovação aprova quando a confiança passa do limite e o critério está claro; abaixo disso, encaminha para uma pessoa decisora | **Muda a regra 8**. Pede um limite de confiança por nível. Começou na #42: o motor de decisão aprova a E4 do analista com a delegação ligada (ver a regra 8) |
 
 Que níveis podem ser delegados ao agente de aprovação é decisão em aberto. Sugestão: regra, analista e
 coordenação podem ser delegados; **bloqueio e diretoria continuam sempre com uma pessoa**.
