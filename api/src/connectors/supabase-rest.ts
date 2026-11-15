@@ -47,6 +47,19 @@ export class SupabaseRestError extends Error {
   }
 }
 
+/**
+ * #42 O código do Postgres (SQLSTATE, ex.: `23505`) e a mensagem que o PostgREST devolve no corpo do erro. O corpo
+ * vem cortado em `detail`; o código e a mensagem são lidos à parte, sem depender do JSON inteiro. Nulo quando o
+ * erro não veio do banco.
+ */
+export function postgresErrorOf(error: unknown): { readonly code: string; readonly message: string } | null {
+  if (!(error instanceof SupabaseRestError)) return null;
+  const code = /"code"\s*:\s*"([0-9A-Z]{5})"/.exec(error.detail)?.[1];
+  if (!code) return null;
+  const message = /"message"\s*:\s*"((?:[^"\\]|\\.)*)/.exec(error.detail)?.[1] ?? '';
+  return { code, message };
+}
+
 const DEFAULT_PAGE_SIZE = 1000;
 const DEFAULT_TIMEOUT_MS = 10_000;
 const MAX_DETAIL = 300;

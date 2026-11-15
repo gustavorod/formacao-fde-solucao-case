@@ -16,13 +16,16 @@ export type RunFigures = {
   dockPublished: number;
   storePublished: number;
   duplicatesBlocked: number;
-  /** #41 Propostas que o motor de decisão avaliou na rodada (modo sombra). */
+  /** #41 Propostas que o motor de decisão avaliou na rodada (no modo sombra ou, #42, no delegado). */
   engineEvaluated: number;
+  /** #42 Propostas que o motor aprovou na rodada (modo delegado); zero no modo sombra. */
+  engineApproved: number;
 };
 
 export const NO_FIGURES: RunFigures = {
   seen: 0, inserted: 0, checked: 0, failed: 0, proposed: 0, approvedByRule: 0,
   cadastroE8: 0, dockPublished: 0, storePublished: 0, duplicatesBlocked: 0, engineEvaluated: 0,
+  engineApproved: 0,
 };
 
 export type RunStatus = 'ok' | 'failed';
@@ -41,14 +44,14 @@ type Row = {
   id: number; started_at: string; finished_at: string; status: RunStatus;
   seen: number; inserted: number; checked: number; failed: number; proposed: number;
   approved_by_rule: number; cadastro_e8: number; dock_published: number; store_published: number;
-  duplicates_blocked: number; engine_evaluated: number; error: string | null;
+  duplicates_blocked: number; engine_evaluated: number; engine_approved: number; error: string | null;
 };
 
 const isRow = shaped<Row>({
   id: isInteger, started_at: isString, finished_at: isString, status: oneOf('ok', 'failed'),
   seen: isInteger, inserted: isInteger, checked: isInteger, failed: isInteger, proposed: isInteger,
   approved_by_rule: isInteger, cadastro_e8: isInteger, dock_published: isInteger, store_published: isInteger,
-  duplicates_blocked: isInteger, engine_evaluated: isInteger, error: nullable(isString),
+  duplicates_blocked: isInteger, engine_evaluated: isInteger, engine_approved: isInteger, error: nullable(isString),
 } satisfies Shape<Row>);
 
 /** #211 Grava a rodada. Quem chama não deixa a falha daqui derrubar o Cron. */
@@ -66,6 +69,7 @@ export async function recordRun(
       approved_by_rule: f.approvedByRule, cadastro_e8: f.cadastroE8, dock_published: f.dockPublished,
       store_published: f.storePublished, duplicates_blocked: f.duplicatesBlocked,
       engine_evaluated: f.engineEvaluated,
+      engine_approved: f.engineApproved,
       error: run.error ?? null,
     },
   ]);
@@ -85,6 +89,7 @@ export async function listRuns(rest: SupabaseRest, limit: number): Promise<Autom
       approvedByRule: r.approved_by_rule, cadastroE8: r.cadastro_e8, dockPublished: r.dock_published,
       storePublished: r.store_published, duplicatesBlocked: r.duplicates_blocked,
       engineEvaluated: r.engine_evaluated,
+      engineApproved: r.engine_approved,
     },
   }));
 }

@@ -31,6 +31,13 @@ describe('#211 buildTimeline', () => {
     ]);
     expect(t.every((e, i) => i === 0 || e.at >= (t[i - 1] as { at: string }).at)).toBe(true);
   });
+  it('#42 aprovada pelo motor (modo delegado): o ator da decisão é o motor', () => {
+    const t = buildTimeline(
+      file({ approval: { approver: 'motor', approverLevel: 'analista', dockAction: { kind: 'receber' } } }),
+      { ...base, decidedAt: '2026-11-16T13:05:00Z' },
+    );
+    expect(t.at(-1)).toMatchObject({ kind: 'decisao', actor: 'engine', actor_name: 'Motor', step: 'Aprovada pelo motor: receber' });
+  });
   it('aprovada pela regra: o ator da decisão é a regra', () => {
     const t = buildTimeline(
       file({ classification: 'MATCH', level: 'regra', line: 6, approval: { approver: 'regra', approverLevel: 'regra', dockAction: { kind: 'receber' } } }),

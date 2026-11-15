@@ -13,7 +13,7 @@ import {
   type Shape,
 } from '../connectors/guards.js';
 import { ErpRegistryConnector } from '../connectors/erp-registry.js';
-import { SupabaseRestError, type SupabaseRest } from '../connectors/supabase-rest.js';
+import { postgresErrorOf, SupabaseRestError, type SupabaseRest } from '../connectors/supabase-rest.js';
 import { AmountAtRisk } from '../domain/amount-at-risk.js';
 import type { Approval } from '../domain/approval.js';
 import { ApprovalPolicy, type ApprovalRoute, type ReguaLine } from '../domain/approval-policy.js';
@@ -27,7 +27,7 @@ import { Money } from '../domain/money.js';
 import { Proposal, type ProposalState } from '../domain/proposal.js';
 import { Quantity } from '../domain/quantity.js';
 import { Title, type TitleState } from '../domain/title.js';
-import { AlreadyDecidedError, type ApprovalStore, type CaseFile } from './store.js';
+import { AlreadyDecidedError, EngineApprovalRefusedError, type ApprovalStore, type CaseFile } from './store.js';
 
 // #63 Formato das linhas, conferido na borda antes de virar domínio.
 
@@ -347,6 +347,22 @@ export async function loadCheckedInvoices(rest: SupabaseRest): Promise<Invoice[]
   );
 }
 
+/**
+ * #42 O que o banco responde à aprovação do motor, na língua da loja. A unicidade (`approvals_proposal_key`, a
+ * pessoa ou outra rodada chegou antes; `approvals_engine_decision_key`, a decisão já gerou uma aprovação) é a mesma
+ * corrida de sempre: `AlreadyDecidedError`. O gatilho da migração 20261117120000 recusa com 23514 a delegação
+ * desligada (a proposta fica com a pessoa) e com 23503/23514 a aprovação que não bate com a decisão ou com a
+ * proposta (erro de programação). O resto segue como veio.
+ */
+function engineRefusal(error: unknown, invoiceAccessKey: string): unknown {
+  const pg = postgresErrorOf(error);
+  if (!pg) return error;
+  if (pg.code === '23505') return new AlreadyDecidedError(invoiceAccessKey);
+  if (pg.code === '23514' && /delega/i.test(pg.message)) return new EngineApprovalRefusedError(invoiceAccessKey, 'delegation_off');
+  if (pg.code === '23514' || pg.code === '23503') return new EngineApprovalRefusedError(invoiceAccessKey, 'mismatch');
+  return error;
+}
+
 /** #63 A loja da aprovação no Supabase. Lê as tabelas inteiras: são poucas notas por dia (vai para a #76). */
 export class SupabaseApprovalStore implements ApprovalStore {
   constructor(
@@ -373,24 +389,38 @@ export class SupabaseApprovalStore implements ApprovalStore {
    * proposta, o título e a nota.
    */
   async saveDecision(file: CaseFile & { readonly approval: Approval }): Promise<void> {
-    const proposalId = await this.proposalId(file.invoice.accessKey);
-    const inserted = await this.rest.insert(
-      'approvals',
-      [
-        {
-          proposal_id: proposalId,
-          approver: file.approval.approver,
-          approver_level: file.approval.approverLevel,
-          justification: file.approval.justification,
-          dock_action: dockActionToJson(file.approval.dockAction),
-          decided_on: file.approval.decidedOn,
-          approved_at: this.now().toISOString(),
-        },
-      ],
-      { onConflict: 'proposal_id', ignoreDuplicates: true },
-    );
-    if (inserted.length === 0) throw new AlreadyDecidedError(file.invoice.accessKey);
     const key = file.invoice.accessKey;
+    const proposalId = await this.proposalId(key);
+    const { engine } = file.approval;
+    let inserted: unknown[];
+    try {
+      inserted = await this.rest.insert(
+        'approvals',
+        [
+          {
+            proposal_id: proposalId,
+            approver: file.approval.approver,
+            approver_level: file.approval.approverLevel,
+            justification: file.approval.justification,
+            dock_action: dockActionToJson(file.approval.dockAction),
+            decided_on: file.approval.decidedOn,
+            approved_at: this.now().toISOString(),
+            // #42 A aprovação do motor leva a decisão que a gerou. `approved_by` é gerada pelo banco: nunca vai aqui.
+            ...(engine
+              ? {
+                  engine_decision_id: engine.decisionId,
+                  engine_confidence: engine.confidence,
+                  engine_model_version: engine.modelVersion,
+                }
+              : {}),
+          },
+        ],
+        { onConflict: 'proposal_id', ignoreDuplicates: true },
+      );
+    } catch (error) {
+      throw engine ? engineRefusal(error, key) : error;
+    }
+    if (inserted.length === 0) throw new AlreadyDecidedError(key);
     await this.rest.update(
       'proposals',
       { id: `eq.${proposalId}` },

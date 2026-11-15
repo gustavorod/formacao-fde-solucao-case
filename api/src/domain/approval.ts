@@ -26,13 +26,25 @@ export type Decision =
   | { readonly kind: 'aprovar' } // ADR-002
   | { readonly kind: 'alterar'; readonly dockAction: DockAction; readonly justification: string }; // ADR-002
 
-/** A aprovação: registrada uma vez por proposta (regra 8). Na regra, o aprovador é a régua. */
+/**
+ * #42 A decisão do motor que gerou a aprovação (modo delegado): o id em engine_decisions, a confiança (nula quando
+ * quem decidiu na cascata foi a regra) e a versão do modelo. O banco confere que batem com a decisão gravada.
+ */
+export type EngineApprovalLink = {
+  readonly decisionId: number;
+  readonly confidence: number | null;
+  readonly modelVersion: string;
+};
+
+/** A aprovação: registrada uma vez por proposta (regra 8). Na regra, o aprovador é a régua; no motor, `motor`. */
 export type Approval = {
   readonly approver: string;
   readonly approverLevel: ApprovalLevel;
   readonly dockAction: DockAction;
   readonly justification: string;
   readonly decidedOn: string;
+  /** #42 Só na aprovação do motor: a decisão que a gerou. */
+  readonly engine?: EngineApprovalLink;
 };
 
 /** Regra 8: a pessoa está abaixo do nível do encaminhamento. */
@@ -44,6 +56,17 @@ export class NotAllowedToApproveError extends DomainError {
 }
 
 export const RULE_APPROVER = 'regra'; // ADR-002
+
+/**
+ * #42 O aprovador da aprovação do motor de decisão (modo delegado). O banco reserva o nome: só a aprovação com a
+ * decisão do motor usa `motor` (restrição approvals_engine_approver_check).
+ */
+export const ENGINE_APPROVER = 'motor';
+
+/** #42 O motor aprovou esta aprovação: o nome é reservado a ele. */
+export function isEngineApproval(approval: Pick<Approval, 'approver'>): boolean {
+  return approval.approver === ENGINE_APPROVER;
+}
 
 export type ProposeInput = {
   readonly route: ApprovalRoute;
@@ -139,6 +162,27 @@ export function approve(
     justification: proposal.justification,
     decidedOn: today,
   });
+}
+
+/**
+ * #42 Regra 8 com o motor de decisão: no modo delegado o motor aprova a proposta do nível analista, sem alterar a
+ * ação, pelo mesmo caminho da aprovação da pessoa (o título vai para a lista do dia). Nunca coordenação, diretoria
+ * ou bloqueio. Quem decide se o motor pode aprovar (delegação ligada, confiança no limite) é a rodada do motor; aqui
+ * fica só o que vale para qualquer aprovação, mais o nível.
+ */
+export function approveByEngine(
+  invoice: Invoice,
+  proposal: Proposal,
+  title: Title,
+  today: string,
+  engine: EngineApprovalLink,
+  supplier?: Pick<Supplier, 'paymentBlocked'>,
+): Approval {
+  if (proposal.level !== 'analista') {
+    throw new NotAllowedToApproveError('analista', proposal.level);
+  }
+  const approval = approve(invoice, proposal, title, { email: ENGINE_APPROVER, level: 'analista' }, { kind: 'aprovar' }, today, supplier);
+  return Object.freeze({ ...approval, engine: Object.freeze({ ...engine }) });
 }
 
 /**

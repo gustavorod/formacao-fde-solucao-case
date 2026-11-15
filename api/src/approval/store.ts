@@ -22,7 +22,9 @@ export interface ApprovalStore {
   find(invoiceAccessKey: string): Promise<CaseFile | null>;
   /**
    * #63 Regra 8: grava a decisão uma vez só. Se a proposta já tem aprovação gravada, lança
-   * `AlreadyDecidedError` e não muda nada (a corrida entre duas pessoas cai aqui).
+   * `AlreadyDecidedError` e não muda nada (a corrida entre duas pessoas cai aqui). #42 Na aprovação do motor
+   * (`approval.engine`), o banco ainda confere a decisão e a delegação: se recusa, lança
+   * `EngineApprovalRefusedError` e não muda nada.
    */
   saveDecision(file: CaseFile & { readonly approval: Approval }): Promise<void>;
   /** #63 AC-13: os processos decididos no dia, com o título liberado ou reduzido na lista do dia. */
@@ -33,6 +35,21 @@ export class AlreadyDecidedError extends Error {
   constructor(invoiceAccessKey: string) {
     super(`Proposta da nota ${invoiceAccessKey} já foi decidida`);
     this.name = 'AlreadyDecidedError';
+  }
+}
+
+/**
+ * #42 O banco recusou a aprovação do motor. `delegation_off`: a delegação do analista foi desligada depois de a
+ * rodada começar (a proposta fica com a pessoa). `mismatch`: a aprovação não bate com a decisão gravada ou com a
+ * proposta (erro de programação: a rodada registra e segue com as outras).
+ */
+export class EngineApprovalRefusedError extends Error {
+  constructor(
+    invoiceAccessKey: string,
+    readonly reason: 'delegation_off' | 'mismatch',
+  ) {
+    super(`Aprovação do motor na nota ${invoiceAccessKey} recusada pelo banco (${reason})`);
+    this.name = 'EngineApprovalRefusedError';
   }
 }
 

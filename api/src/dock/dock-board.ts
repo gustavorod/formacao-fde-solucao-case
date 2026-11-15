@@ -1,6 +1,7 @@
 // A doca de um destino num dia: as notas e a ação de cada uma (#72, #43 AC-1 a AC-4). Função pura.
 import type { DockActionMessage, Published } from '../connectors/ports.js';
 import type { ApprovalLevel, DockAction, PartialLine, Unit } from '../domain/index.js';
+import { isEngineApproval } from '../domain/approval.js';
 import { receivingPlace, type ReceivingPlace } from './receiving-place.js';
 
 /** #72 O que a doca precisa saber da nota. */
@@ -42,8 +43,11 @@ export type DockStatus =
   | { readonly kind: 'acao'; readonly action: DockActionView; readonly publishedAt: string }
   | { readonly kind: 'aguardando_aprovacao'; readonly instrucao: typeof AWAITING_INSTRUCTION };
 
-/** #211 Quem decidiu a nota, no vocabulário do `timeline[]`: a régua ou a pessoa (pelo e-mail). */
-export type DockDecidedBy = { readonly actor: 'rule' | 'person'; readonly actor_name: string };
+/**
+ * #211 Quem decidiu a nota, no vocabulário do `timeline[]`: a régua, a pessoa (pelo e-mail) ou, #42, o motor de
+ * decisão no modo delegado (`Motor`).
+ */
+export type DockDecidedBy = { readonly actor: 'rule' | 'engine' | 'person'; readonly actor_name: string };
 
 /** #211 A decisão registrada da nota: quem aprovou e em que nível (`regra` é a régua). */
 export type DockDecision = { readonly approver: string; readonly approverLevel: ApprovalLevel };
@@ -80,7 +84,10 @@ export type DockBoardInput = {
 
 function decidedByOf(decision: DockDecision | undefined): DockDecidedBy | null {
   if (!decision) return null;
-  return decision.approverLevel === 'regra' ? { actor: 'rule', actor_name: 'Regra' } : { actor: 'person', actor_name: decision.approver };
+  if (decision.approverLevel === 'regra') return { actor: 'rule', actor_name: 'Regra' };
+  // #42 O nome `motor` é reservado à aprovação do motor (restrição approvals_engine_approver_check).
+  if (isEngineApproval(decision)) return { actor: 'engine', actor_name: 'Motor' };
+  return { actor: 'person', actor_name: decision.approver };
 }
 
 function view(action: DockAction): DockActionView {
