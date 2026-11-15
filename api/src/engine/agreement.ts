@@ -105,8 +105,9 @@ export type AgreementRow = {
   readonly at_or_above_threshold: number;
   readonly agreement_rate_at_threshold: number | null;
   /**
-   * #41 Das avaliadas, as que têm uma falha do Clef (`clef_failed`, na cascata ou na medição) ainda não refeita:
-   * nenhuma resposta do Clef para a proposta. A rodada tenta de novo; o número mostra o quanto falta na amostra.
+   * #41 Das avaliadas, as que têm uma falha do Clef (`clef_failed`, na cascata ou na medição) e nenhuma resposta
+   * dele: as que a rodada ainda tenta de novo e as que chegaram ao teto de tentativas. Mostra o quanto falta na
+   * amostra.
    */
   readonly clef_failed: number;
 };
@@ -172,8 +173,9 @@ const ratio = (num: number, den: number): number | null => (den === 0 ? null : n
  *   `engine_settings.confidence_threshold` do analista.
  * - `agreement_rate_at_threshold`: só nessas e já decididas pela pessoa, a parte em que o Clef decidiu o mesmo
  *   que a pessoa. É o número que decide ligar a delegação, que é do Clef.
- * - `clef_failed`: das avaliadas, as que têm uma linha `clef_failed` e nenhuma resposta do Clef. A nova
- *   tentativa substitui a linha da falha, então a proposta sai daqui quando o Clef responde.
+ * - `clef_failed`: das avaliadas, as que têm uma linha `clef_failed` e nenhuma resposta do Clef, inclusive as que
+ *   chegaram ao teto de tentativas. A resposta de uma nova tentativa substitui a linha da falha, então a proposta
+ *   sai daqui quando o Clef responde.
  * Divisão por zero dá nulo.
  */
 export function agreementReport(input: {

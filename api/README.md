@@ -67,12 +67,18 @@ aprova nada: não escreve em `approvals` nem muda `proposals`. O número de deci
 - **Idempotente:** a proposta que já tem a decisão da cascata no modo não volta à cascata, e a que já tem uma
   resposta da versão atual do Clef (cascata ou medição) não volta ao Clef. No máximo 5 chamadas ao Clef por
   rodada, da cascata e da medição juntas, a cascata primeiro; o resto fica para a próxima.
-- **A falha do Clef é tentada de novo:** a linha `clef_failed` da versão atual não conta como avaliada. Numa
-  rodada seguinte o Clef é chamado de novo, no mesmo papel (cascata ou medição), e a resposta substitui a linha da
-  falha por um `PATCH` filtrado por `pending_reason = clef_failed`: a resposta que deu certo nunca é sobrescrita, e
-  as unicidades de `engine_decisions` seguem as mesmas, sem migração. As novas tentativas entram no teto de 5,
-  depois do que nunca foi avaliado. Se a gravação das novas tentativas ou da medição falha, a cascata nova já
-  gravada segue contada em `engine_evaluated`.
+- **A falha do Clef é tentada de novo, até 3 vezes:** a linha `clef_failed` da versão atual não conta como
+  avaliada. Numa rodada seguinte o Clef é chamado de novo, no mesmo papel (cascata ou medição), por um `PATCH`
+  filtrado por `pending_reason = clef_failed` e pelas tentativas lidas (`attempts`): a resposta que deu certo nunca
+  é sobrescrita, e duas rodadas ao mesmo tempo não contam a mesma tentativa duas vezes. A resposta substitui a
+  linha da falha e conta em `engine_evaluated`; a nova falha só soma a tentativa e troca `last_attempt_at`, o erro
+  e a latência, sem mover `decided_at` e sem contar como avaliada (a falha repetida não é decisão nova, e a
+  proposta não muda de semana no relatório). Com `attempts = 3` (`CLEF_MAX_ATTEMPTS`) a falha fica definitiva: o
+  Clef não é mais chamado para aquela linha, e ela segue em `clef_failed` no relatório. As novas tentativas entram
+  no teto de 5 por rodada, depois do que nunca foi avaliado, a de `last_attempt_at` mais antiga primeiro: uma
+  falha que persiste não toma o lugar das outras (migração `20261116130000_engine_decisions_attempts.sql`). Se a
+  gravação das novas tentativas ou da medição falha, a cascata nova já gravada segue contada em
+  `engine_evaluated`.
 
 ### O motor ao lado da pessoa (AC-4) e o relatório de acerto (AC-5)
 
@@ -104,8 +110,8 @@ proposta; nada novo é gravado.
     o `engine_settings.confidence_threshold` do analista (devolvido em `threshold`).
   - `agreement_rate_at_threshold`: só nessas e já decididas pela pessoa, a parte em que o Clef decidiu o mesmo
     que a pessoa (é o número que decide ligar a delegação, que é do Clef).
-  - `clef_failed`: das avaliadas, as que têm uma falha do Clef ainda não refeita (nenhuma resposta dele); mostra
-    o quanto falta na amostra enquanto a rodada tenta de novo.
+  - `clef_failed`: das avaliadas, as que têm uma falha do Clef sem nenhuma resposta dele, as que ainda serão
+    tentadas de novo e as que chegaram às 3 tentativas; mostra o quanto falta na amostra.
   - Divisão por zero dá `null`.
 
 ## Testar

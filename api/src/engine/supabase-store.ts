@@ -1,4 +1,5 @@
-// #41 A loja do motor no Supabase: engine_settings e engine_decisions (migrações 20261116110000 e 20261116120000).
+// #41 A loja do motor no Supabase: engine_settings e engine_decisions (migrações 20261116110000, 20261116120000 e
+// #41 20261116130000).
 import {
   isBoolean,
   isInteger,
@@ -19,7 +20,14 @@ import {
   type EngineSettings,
   type StoredDecision,
 } from './decision.js';
-import { isClefFailure, type EngineReader, type EngineStore, type Evaluated, type ProposalOutcomeRow } from './store.js';
+import {
+  isClefFailure,
+  type EngineReader,
+  type EngineStore,
+  type Evaluated,
+  type ProposalOutcomeRow,
+  type Retry,
+} from './store.js';
 
 type SettingsRow = {
   level: string;
@@ -87,12 +95,20 @@ const decisionFromRow = (r: DecisionRow): StoredDecision => ({
   decidedAt: r.decided_at,
 });
 
-type EvaluatedRow = { invoice_access_key: string; role: StoredDecision['role']; pending_reason: StoredDecision['pendingReason'] };
+type EvaluatedRow = {
+  invoice_access_key: string;
+  role: StoredDecision['role'];
+  pending_reason: StoredDecision['pendingReason'];
+  attempts: number;
+  last_attempt_at: string;
+};
 
 const isEvaluatedRow = shaped<EvaluatedRow>({
   invoice_access_key: isString,
   role: oneOf('cascade', 'benchmark'),
   pending_reason: nullable(oneOf('below_confidence', 'outside_criteria', 'level_not_delegable', 'delegation_off', 'clef_failed')),
+  attempts: isInteger,
+  last_attempt_at: isString,
 } satisfies Shape<EvaluatedRow>);
 
 const isProposalOutcomeRow = shaped<{ invoice_access_key: string; classification: string; state: ProposalOutcomeRow['state'] }>({
@@ -128,13 +144,14 @@ export class SupabaseEngineStore implements EngineStore, EngineReader {
 
   /**
    * #41 Duas leituras: as notas com a decisão da cascata e as linhas da versão atual do Clef, separadas entre a
-   * resposta (já medida) e a falha (`clef_failed`, que a rodada tenta de novo).
+   * resposta (já medida) e a falha (`clef_failed`, com as tentativas e a hora da última, que a rodada usa para
+   * tentar de novo a mais antiga e parar no teto).
    */
   async evaluated(mode: EngineMode, clefVersion: string): Promise<Evaluated> {
     const read = async (filters: Record<string, string>) =>
       parseRows(
         await this.rest.select('engine_decisions', {
-          select: 'invoice_access_key,role,pending_reason',
+          select: 'invoice_access_key,role,pending_reason,attempts,last_attempt_at',
           filters: { mode: `eq.${mode}`, ...filters },
         }),
         isEvaluatedRow,
@@ -148,7 +165,11 @@ export class SupabaseEngineStore implements EngineStore, EngineReader {
     return {
       cascade: new Set(cascadeRows.map((r) => r.invoice_access_key)),
       clef: new Set(current.filter((r) => !failure(r)).map((r) => r.invoice_access_key)),
-      failed: new Map(current.filter(failure).map((r) => [r.invoice_access_key, r.role])),
+      failed: new Map(
+        current
+          .filter(failure)
+          .map((r) => [r.invoice_access_key, { role: r.role, attempts: r.attempts, lastAttemptAt: r.last_attempt_at }]),
+      ),
     };
   }
 
@@ -201,17 +222,43 @@ export class SupabaseEngineStore implements EngineStore, EngineReader {
   }
 
   /**
-   * #41 A nova tentativa do Clef: um PATCH por decisão, filtrado pela proposta, versão, modo, papel e
-   * `pending_reason = clef_failed`. O filtro garante que só a linha de falha é trocada (o Postgres reconfere o
-   * WHERE depois do lock, então duas rodadas ao mesmo tempo nunca sobrescrevem uma resposta); as chaves da linha
-   * não mudam, e as duas unicidades seguem valendo. `decided_at` passa a ser a hora da nova tentativa.
+   * #41 A resposta da nova tentativa do Clef: um PATCH por decisão, filtrado pela proposta, versão, modo, papel,
+   * `pending_reason = clef_failed` e as tentativas lidas. O filtro garante que só a linha de falha é trocada (o
+   * Postgres reconfere o WHERE depois do lock, então duas rodadas ao mesmo tempo nunca sobrescrevem uma resposta nem
+   * contam a mesma tentativa duas vezes); as chaves da linha não mudam, e as duas unicidades seguem valendo.
+   * `decided_at` passa a ser a hora da resposta.
    */
-  async replaceFailed(decisions: readonly EngineDecision[]): Promise<number> {
-    let replaced = 0;
-    for (const d of decisions) {
+  async replaceFailed(retries: readonly Retry[]): Promise<number> {
+    return this.patchFailed(retries, (d, now) => ({
+      outcome: d.outcome,
+      decided_by: d.decidedBy,
+      confidence: d.confidence,
+      reason: d.reason,
+      pending_reason: d.pendingReason,
+      error: d.error,
+      latency_ms: d.latencyMs,
+      decided_at: now,
+    }));
+  }
+
+  /**
+   * #41 A nova tentativa que falhou de novo: o mesmo filtro, e só a tentativa, a hora dela, o erro e a latência
+   * mudam. `decided_at` fica o da primeira falha, então a proposta não muda de semana no relatório.
+   */
+  async noteFailedAttempt(retries: readonly Retry[]): Promise<number> {
+    return this.patchFailed(retries, (d) => ({ error: d.error, latency_ms: d.latencyMs }));
+  }
+
+  private async patchFailed(
+    retries: readonly Retry[],
+    fields: (d: EngineDecision, now: string) => Record<string, unknown>,
+  ): Promise<number> {
+    let patched = 0;
+    for (const { decision: d, attempts } of retries) {
       if (!isAccessKey(d.invoiceAccessKey)) {
         throw new SupabaseRestError('update', 'engine_decisions', 0, 'chave de acesso fora do formato');
       }
+      const now = new Date().toISOString();
       const rows = await this.rest.update(
         'engine_decisions',
         {
@@ -220,21 +267,13 @@ export class SupabaseEngineStore implements EngineStore, EngineReader {
           mode: `eq.${d.mode}`,
           role: `eq.${d.role}`,
           pending_reason: 'eq.clef_failed',
+          attempts: `eq.${attempts}`,
         },
-        {
-          outcome: d.outcome,
-          decided_by: d.decidedBy,
-          confidence: d.confidence,
-          reason: d.reason,
-          pending_reason: d.pendingReason,
-          error: d.error,
-          latency_ms: d.latencyMs,
-          decided_at: new Date().toISOString(),
-        },
+        { ...fields(d, now), attempts: attempts + 1, last_attempt_at: now },
       );
-      replaced += rows.length;
+      patched += rows.length;
     }
-    return replaced;
+    return patched;
   }
 
   /** #41 AC-4 As linhas do motor da nota no modo. A chave fora do formato não tem linha. */

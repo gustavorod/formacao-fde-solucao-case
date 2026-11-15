@@ -6,11 +6,17 @@ import { SupabaseRest } from '../../src/connectors/supabase-rest.js';
 import { tick } from '../../src/cron/tick.js';
 import { RULE_VERSION } from '../../src/engine/decision.js';
 import { runShadowRound } from '../../src/engine/run.js';
-import { MemoryEngineStore } from '../../src/engine/store.js';
+import { CLEF_MAX_ATTEMPTS, MemoryEngineStore } from '../../src/engine/store.js';
 import { SupabaseEngineStore } from '../../src/engine/supabase-store.js';
 import { FakePostgrest } from '../support/fake-postgrest.js';
 import { kitTables } from '../support/kit.js';
 import { caseFile, FakeClef } from './support.js';
+
+/** #41 Um relógio que anda um minuto a cada leitura: cada gravação tem a sua hora. */
+const minutes = (start = Date.parse('2026-11-16T12:00:00Z')) => {
+  let t = start;
+  return () => new Date((t += 60_000));
+};
 
 afterEach(() => {
   vi.unstubAllGlobals();
@@ -140,6 +146,63 @@ describe('#41 a falha do Clef é tentada de novo', () => {
     expect(store.decisions.every((d) => d.pendingReason !== 'clef_failed')).toBe(true);
   });
 
+  it('a nova tentativa que falha de novo não conta como avaliada nem muda a hora da decisão', async () => {
+    const clock = minutes();
+    const approvals = new MemoryApprovalStore([caseFile(), caseFile({ riskCents: 1_500 })]);
+    const store = new MemoryEngineStore(undefined, clock);
+    const first = await runShadowRound({ approvals, store, clef: timeout });
+    expect(first).toMatchObject({ evaluated: 2, measured: 1, clefFailed: 2 });
+    const before = store.decisions.map((d) => d.decidedAt);
+    const again = await runShadowRound({ approvals, store, clef: timeout });
+    expect(again).toMatchObject({ evaluated: 0, measured: 0, retried: 0, clefCalls: 2, clefFailed: 2 });
+    expect(store.decisions.map((d) => d.decidedAt)).toEqual(before);
+    expect(store.decisions.filter((d) => d.pendingReason === 'clef_failed').map((d) => d.attempts)).toEqual([2, 2]);
+    expect(store.decisions.every((d) => d.lastAttemptAt > d.decidedAt || d.pendingReason !== 'clef_failed')).toBe(true);
+  });
+
+  it('a falha mais antiga é tentada primeiro, a 6ª é alcançada, e o teto de tentativas para de chamar o Clef', async () => {
+    const files = Array.from({ length: 6 }, () => caseFile({ riskCents: 1_500 }));
+    const keys = files.map((f) => f.invoice.accessKey);
+    const approvals = new MemoryApprovalStore(files);
+    const store = new MemoryEngineStore(undefined, minutes());
+    const failing = () =>
+      new FakeClef(async () => {
+        throw new Error('3040: Capacity temporarily exceeded');
+      });
+    const round = async () => {
+      const clef = failing();
+      const result = await runShadowRound({ approvals, store, clef, clefLimit: 5 });
+      return { result, called: clef.calls.map((c) => keys.indexOf(c.invoiceAccessKey) + 1) };
+    };
+
+    expect((await round()).called).toEqual([1, 2, 3, 4, 5]);
+    // #41 A 6ª nunca foi avaliada: entra antes das novas tentativas; depois, as falhas mais antigas.
+    expect((await round()).called).toEqual([6, 1, 2, 3, 4]);
+    // #41 A 5ª ficou de fora e foi tentada há mais tempo: vem primeiro, à frente das que já tiveram 2 tentativas.
+    const third = await round();
+    expect(third.called).toEqual([5, 6, 1, 2, 3]);
+    expect(third.result).toMatchObject({ evaluated: 0, retried: 0, clefCalls: 5, deferred: 1 });
+    // #41 A 1ª, a 2ª e a 3ª chegaram às 3 tentativas e saem da fila; ficam as outras, a mais antiga primeiro.
+    const fourth = await round();
+    expect(fourth.called).toEqual([4, 5, 6]);
+    // #41 Todas no teto: a falha fica definitiva e o Clef não é mais chamado.
+    const fifth = await round();
+    expect(fifth.called).toEqual([]);
+    expect(fifth.result).toMatchObject({ evaluated: 0, clefCalls: 0, deferred: 0 });
+    expect(store.decisions).toHaveLength(6);
+    expect(store.decisions.every((d) => d.pendingReason === 'clef_failed' && d.attempts === CLEF_MAX_ATTEMPTS)).toBe(true);
+  });
+
+  it('a medição no teto também não volta ao Clef, nem como medição nova', async () => {
+    const approvals = new MemoryApprovalStore([caseFile()]);
+    const store = new MemoryEngineStore(undefined, minutes());
+    for (let i = 0; i < CLEF_MAX_ATTEMPTS; i += 1) await runShadowRound({ approvals, store, clef: timeout });
+    const clef = new FakeClef();
+    expect(await runShadowRound({ approvals, store, clef })).toMatchObject({ measured: 0, clefCalls: 0 });
+    expect(clef.calls).toHaveLength(0);
+    expect(store.decisions.find((d) => d.role === 'benchmark')).toMatchObject({ pendingReason: 'clef_failed', attempts: CLEF_MAX_ATTEMPTS });
+  });
+
   it('se a gravação da medição falha, a cascata gravada segue contada', async () => {
     const store = new MemoryEngineStore();
     const record = store.record.bind(store);
@@ -158,7 +221,7 @@ describe('#41 a falha do Clef é tentada de novo', () => {
     const benchmark = store.decisions.find((d) => d.role === 'benchmark');
     expect(benchmark).toBeDefined();
     const failed = { ...benchmark!, outcome: 'pending', decidedBy: 'person', confidence: null, pendingReason: 'clef_failed', error: 'X' } as const;
-    expect(await store.replaceFailed([failed])).toBe(0);
+    expect(await store.replaceFailed([{ decision: failed, attempts: 1 }])).toBe(0);
     expect(store.decisions.find((d) => d.role === 'benchmark')).toMatchObject({ decidedBy: 'clef', pendingReason: null });
   });
 });
@@ -198,18 +261,28 @@ describe('#41 a loja no Supabase', () => {
     const writes = fake.requests.filter((r) => r.method !== 'GET').map((r) => new URL(r.url).pathname);
     expect(writes).toEqual(['/rest/v1/engine_decisions']);
 
-    // #41 A falha é tentada de novo na rodada seguinte, por cima da mesma linha: nenhuma linha a mais.
+    // #41 A falha é tentada de novo na rodada seguinte, na mesma linha: nenhuma linha a mais. A nova falha só
+    // soma a tentativa; não é decisão nova, não conta em evaluated e não move decided_at (nem a semana).
+    const [firstFailure] = fake.rows('engine_decisions');
+    const decidedAt = firstFailure?.decided_at;
     const again = await runShadowRound({ approvals: { listAwaiting: async () => [file] }, store, clef });
-    expect(again).toMatchObject({ evaluated: 1, retried: 1, clefFailed: 1 });
-    expect(fake.rows('engine_decisions')).toHaveLength(1);
+    expect(again).toMatchObject({ evaluated: 0, retried: 0, clefCalls: 1, clefFailed: 1 });
+    expect(fake.rows('engine_decisions')).toEqual([
+      expect.objectContaining({
+        outcome: 'pending', decided_by: 'person', pending_reason: 'clef_failed', error: 'ClefTimeoutError', attempts: 2, decided_at: decidedAt,
+      }),
+    ]);
+    const failedPatch = fake.requests.filter((r) => r.method === 'PATCH').at(-1);
+    expect(new URL(failedPatch?.url ?? '').searchParams.get('attempts')).toBe('eq.1');
 
     const answered = await runShadowRound({ approvals: { listAwaiting: async () => [file] }, store, clef: new FakeClef() });
     expect(answered).toMatchObject({ evaluated: 1, retried: 1, clefFailed: 0 });
     expect(fake.rows('engine_decisions')).toEqual([
-      expect.objectContaining({ proposal_id: 7, role: 'cascade', decided_by: 'clef', outcome: 'approve', confidence: 0.97, pending_reason: null, error: null }),
+      expect.objectContaining({ proposal_id: 7, role: 'cascade', decided_by: 'clef', outcome: 'approve', confidence: 0.97, pending_reason: null, error: null, attempts: 3 }),
     ]);
     const patch = fake.requests.filter((r) => r.method === 'PATCH').at(-1);
     expect(new URL(patch?.url ?? '').searchParams.get('pending_reason')).toBe('eq.clef_failed');
+    expect(new URL(patch?.url ?? '').searchParams.get('attempts')).toBe('eq.2');
 
     // #41 Com a resposta gravada, a proposta não volta ao Clef.
     const done = await runShadowRound({ approvals: { listAwaiting: async () => [file] }, store, clef: new FakeClef() });
@@ -226,7 +299,7 @@ describe('#41 a loja no Supabase', () => {
     } as const;
     expect(await store.record([ok])).toBe(1);
     const failed = { ...ok, outcome: 'pending', decidedBy: 'person', confidence: null, pendingReason: 'clef_failed', error: 'ClefTimeoutError', reason: 'falhou' } as const;
-    expect(await store.replaceFailed([failed])).toBe(0);
+    expect(await store.replaceFailed([{ decision: failed, attempts: 1 }])).toBe(0);
     expect(fake.rows('engine_decisions')).toEqual([expect.objectContaining({ decided_by: 'clef', confidence: 0.99, pending_reason: null })]);
   });
 
